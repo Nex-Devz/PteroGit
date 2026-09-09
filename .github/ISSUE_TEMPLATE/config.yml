@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Pterodactyl Panel documentation
+    url: https://pterodactyl.io
+    about: Questions about installing or operating the Pterodactyl panel itself.
+  - name: Pterodactyl community / Discord
+    url: https://discord.gg/pterodactyl
+    about: Ask general Pterodactyl questions that are not related to a PteroGit bug.

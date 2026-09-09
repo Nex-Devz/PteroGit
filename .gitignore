@@ -1,0 +1,29 @@
+# Editor configuration
+.editorconfig
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Node / frontend build
+node_modules/
+dist/
+
+# Local dev scripts
+/tmp/
+*.local
+
+# Environment / secrets (never commit)
+.env
+*.env
+.env.*
+
+# Backups and logs
+backups/
+storage-logs/
+
+# Behind-the-scenes
+.idea/
+.vscode/

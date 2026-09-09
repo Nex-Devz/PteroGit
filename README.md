@@ -162,7 +162,13 @@ PteroGit/
 
 ## Development
 
-See [start.md](start.md) for the repository conventions, how the source tree maps to the panel, and how to package a new release.
+Contributions are welcome. Review the [Contributing Guide](CONTRIBUTING.md) and
+[Code of Conduct](CODE_OF_CONDUCT.md) first, then read [start.md](start.md) — the
+authoritative reference for repository conventions, how the source tree maps to the panel,
+and the release/push checklist.
+
+To report a bug or request a feature, use the [issue templates](.github/ISSUE_TEMPLATE/).
+For security vulnerabilities follow [SECURITY.md](SECURITY.md).
 
 ---
 

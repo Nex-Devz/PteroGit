@@ -1,0 +1,54 @@
+name: Feature request
+description: Suggest a new feature or improvement for PteroGit.
+title: "[Feature]: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing a change. Before adding a request, check that it does not
+        already exist as an open or closed issue.
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Requirements
+      options:
+        - label: I have searched existing issues and this is a new request.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: What is the use case or pain point this feature solves?
+      placeholder: "e.g. Sub-users cannot see per-branch deploy status because there is no status."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How should the feature behave? API surface, UI placement, settings.
+      placeholder: "Describe the feature as precisely as possible."
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What else did you try or consider?
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - Backend (controllers, services, git operations)
+        - Frontend (React UI, routers)
+        - Installer / patcher
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional context
+      description: A branch of behaviour for edge cases, screenshots, links to similar projects.

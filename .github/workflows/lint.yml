@@ -1,0 +1,62 @@
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  php-lint:
+    name: PHP syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+      - name: Lint PHP files
+        run: |
+          set -e
+          while IFS= read -r -d '' file; do
+            php -l "$file"
+          done < <(find src patcher -type f -name "*.php" -print0)
+
+  shellcheck:
+    name: Shell check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Syntax check
+        run: bash -n install.sh
+      - name: Shellcheck
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          files: install.sh
+
+  patcher-idempotency:
+    name: Patcher idempotency
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+      - name: Run patcher on fixture
+        run: |
+          set -e
+          # Use a minimal fixture tree containing the stock anchors.
+          # The reference fixture is maintained in tests/fixtures/stockpanel.
+          if [ -d tests/fixtures/stockpanel ]; then
+            php patcher/apply.php "$(pwd)/tests/fixtures/stockpanel"
+            php patcher/apply.php "$(pwd)/tests/fixtures/stockpanel"
+          else
+            echo "No stock fixture present; skipping (run locally against /tmp/stockpanel)."
+          fi

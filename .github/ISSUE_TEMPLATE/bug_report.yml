@@ -1,0 +1,101 @@
+name: Bug report
+description: Report a problem with the PteroGit installer or the feature running on a panel.
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill in as much detail as
+        possible so the issue can be reproduced and fixed quickly.
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Requirements
+      description: Confirm the following before submitting.
+      options:
+        - label: I have searched the existing issues and this is not a duplicate.
+          required: true
+        - label: I am using a supported Pterodactyl Panel 1.15.x install.
+          required: true
+        - label: I installed with the one-command `bash install.sh` (or clearly describe manual steps).
+          required: true
+        - label: I have redacted all secrets/API keys from anything I paste below.
+          required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug description
+      description: What is happening, and what did you expect to happen instead?
+      placeholder: "e.g. The GitHub tab renders but /git?history shows a blank page."
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps that trigger the bug.
+      placeholder: |
+        1. Link a GitHub account with a `repo` token.
+        2. Open a server → GitHub tab.
+        3. Click "History".
+        4. See error / blank page.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and screenshots
+      description: Paste relevant output from `storage/logs/laravel-*.log`, browser console, and FPM logs.
+      render: shell
+  - type: input
+    id: panel_version
+    attributes:
+      label: Pterodactyl panel version
+      placeholder: "e.g. 1.15.1"
+    validations:
+      required: true
+  - type: dropdown
+    id: panel_theme
+    attributes:
+      label: Panel theme
+      options:
+        - Stock (default theme)
+        - Custom theme
+    validations:
+      required: true
+  - type: input
+    id: php_version
+    attributes:
+      label: PHP version
+      placeholder: "e.g. 8.2.33"
+  - type: input
+    id: db_and_os
+    attributes:
+      label: Database and OS
+      placeholder: "e.g. MariaDB 10.11 on Ubuntu 22.04"
+  - type: input
+    id: install_mode
+    attributes:
+      label: How was PteroGit installed?
+      description: Exact command used (path argument, skip-build flag, OAuth enabled?).
+      placeholder: "e.g. bash install.sh /var/www/pterodactyl"
+  - type: checkboxes
+    id: affected_areas
+    attributes:
+      label: Where does the problem appear?
+      options:
+        - label: Installer / patcher (install.sh, apply.php)
+        - label: Backend (controllers, services, routes)
+        - label: Frontend (React UI, routers, API bindings)
+        - label: Database / migrations
+        - label: Documentation
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - Low (cosmetic / minor)
+        - Medium (feature partially broken)
+        - High (feature unusable)
+        - Critical (panel broken / security)
