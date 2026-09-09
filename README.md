@@ -1,27 +1,41 @@
 # PteroGit
 
-GitHub / Git integration for the [Pterodactyl Panel](https://github.com/pterodactyl/panel) (v1.15.x).
-One-command, **theme-agnostic** installer — it works on stock and on any custom panel theme, gives every server a full `GitHub` tab, and adds a GitHub settings page for admins.
+GitHub/Git integration for the [Pterodactyl Panel](https://github.com/pterodactyl/panel) (v1.15.x).
 
-> The installer only **adds** the feature on top of your existing panel — it never overwrites stock files you didn't need changed, and every file it touches is backed up before being modified.
+PteroGit adds a full Git workflow to the Pterodactyl control panel: users link their GitHub accounts, connect repositories to their servers, and manage commits, branches, history and `.gitignore` directly from a dedicated server tab. A single-command installer applies the feature on top of an existing panel — stock or custom theme — without replacing or overwriting panel code.
+
+The installer only adds new files and applies targeted patches. Every modified file is backed up before being changed, and all patch operations are idempotent, so the installer can be re-run safely.
 
 ---
 
 ## Features
 
-- 👤 **Link GitHub accounts** — Personal Access Token (PAT, `repo` scope) or optional OAuth2 sign-in, multiple accounts per user.
-- 📦 **Per-server repositories** — connect / switch / disconnect any GitHub repo from your linked accounts.
-- 🔁 **Full Git workflow UI** — stage, unstage, discard, commit, push, pull directly from the panel.
-- 🌿 **Branch management** — create, switch and delete branches.
-- 🕘 **Commit history & revert** — browse history and revert commits in one click.
-- 📄 **`.gitignore` editor** — read/write `.gitignore` per repo.
-- 🧑‍🔧 **Git identity** — per-server commit name/email management.
-- ⚙️ **Admin settings page** — toggle the feature and configure GitHub OAuth from the panel.
-- 🔒 All git commands run as a dedicated system user (`pterodactyl`) with a scoped `sudoers` rule — never as `root` or the web user.
+- **Account linking** – Users connect multiple GitHub accounts per panel user via a Personal Access Token (`repo` scope) or optional OAuth2 sign-in.
+- **Per-server repositories** – Connect, switch and disconnect GitHub repositories from linked accounts per server.
+- **Git workflow UI** – Stage, unstage, discard, commit, push and pull from the panel interface.
+- **Branch management** – Create, switch and delete branches.
+- **Commit history and revert** – Browse commit history and revert commits.
+- **`.gitignore` editor** – Read and write `.gitignore` per repository.
+- **Git identity** – Per-server commit name and email configuration.
+- **Admin settings page** – Enable/disable the feature and configure GitHub OAuth from the panel.
+- **Security** – All git commands execute as a dedicated system user (`pterodactyl`) through a scoped sudoers rule; never as `root` or the web user.
 
 ---
 
-## Quick install (one command)
+## Requirements
+
+| Requirement | Version |
+|---|---|
+| Pterodactyl Panel | 1.15.x |
+| PHP CLI (on the panel host) | `^8.2` |
+| MySQL / MariaDB | any modern release |
+| Node.js + Yarn 1.x | Node `18+`, Yarn `1` (required only to rebuild the frontend) |
+
+Redis is recommended for the panel cache and queue but not required.
+
+---
+
+## Installation
 
 Run as `root` (or with `sudo`):
 
@@ -29,92 +43,81 @@ Run as `root` (or with `sudo`):
 bash <(curl -sSL https://raw.githubusercontent.com/Nex-Devz/PteroGit/main/install.sh)
 ```
 
-Custom panel path:
+Install against a custom panel path:
 
 ```bash
 bash <(curl -sSL https://raw.githubusercontent.com/Nex-Devz/PteroGit/main/install.sh) /opt/pterodactyl
 ```
 
-Skip the (slow) frontend rebuild if you will run it yourself later:
+Skip the frontend rebuild (performed manually later):
 
 ```bash
 GIT_FEATURE_SKIP_BUILD=1 bash install.sh
 ```
 
-### Requirements
+### What the installer does
 
-| Requirement | Version |
-|---|---|
-| Pterodactyl Panel | `1.15.x` |
-| PHP CLI (same host as panel) | `^8.2` |
-| MySQL / MariaDB | any recent |
-| Node.js + Yarn 1.x | Node `18+`, Yarn `1` (only needed to rebuild the frontend) |
-
-Redis is recommended for the panel cache/queue but not required.
-
----
-
-## What the installer does
-
-1. **Backs up** every file it touches to `storage/github-integration-backup-<timestamp>/`.
-2. **Copies** the new feature files (`src/`) into the panel tree.
-3. **Patches** routes, config, view-composer, routers and models (idempotent — safe to re-run).
-4. Adds the required **`.env` variables** (if missing).
-5. Runs `composer dump-autoload` and `php artisan migrate --force` (creates the database tables).
+1. Creates a timestamped backup of every file it touches in `storage/github-integration-backup-<timestamp>/`.
+2. Copies the new feature files from `src/` into the panel tree.
+3. Patches routes, configuration, view composer, routers and models (idempotent).
+4. Appends the required `.env` variables when absent.
+5. Runs `composer dump-autoload` and `php artisan migrate --force`.
 6. Rebuilds the frontend (`yarn install && yarn run build:production`).
-7. Rebuilds Laravel caches and restarts the queue, fixes file ownership.
-8. **Optionally** creates the `pterodactyl` system user and installs a scoped `sudoers` rule.
+7. Rebuilds Laravel caches, restarts the queue and fixes file ownership.
+8. Optionally creates the `pterodactyl` system user and installs the scoped sudoers rule.
 
-### Database tables (created by the migration)
+### Database tables
 
 | Table | Purpose |
 |---|---|
 | `github_accounts` | Linked GitHub accounts per user |
-| `server_git_repositories` | GitHub repo connection per server |
+| `server_git_repositories` | GitHub repository connection per server |
 | `git_operations` | Operation audit log (connect/commit/push/pull/…) |
+
+The schema is created by the migration shipped in `src/database/migrations`.
 
 ---
 
 ## Post-install configuration
 
-### 1. Let the panel read server directories
+### 1. Panel access to server directories
 
-The panel runs git commands against each server's directory under `PTERODACTYL_GIT_DATA_DIRECTORY` (default `/var/lib/pterodactyl`, the Wings data folder). Make sure each server folder is owned by the `pterodactyl` user:
+Git commands run against each server's directory under `PTERODACTYL_GIT_DATA_DIRECTORY` (default: `/var/lib/pterodactyl`, the Wings data folder). Each server directory must be owned by the `pterodactyl` user:
 
 ```bash
 chown -R pterodactyl:pterodactyl /var/lib/pterodactyl/<server-uuid>
 ```
 
-If you use a different data directory, set it in `.env` and reload config:
+For a custom data directory, set it in `.env` and refresh the cache:
 
 ```bash
 echo "PTERODACTYL_GIT_DATA_DIRECTORY=/your/path" >> .env
 php artisan config:cache
 ```
 
-### 2. Permission group for eggs
+### 2. Egg permissions
 
-The `/git` route and the tab require the `git.*` permission group. Root admins always see the tab; for **sub-users** you must add a `git` permission group to the relevant eggs in the panel (Admin → Nests → Egg → Permissions).
+The server `/git` route and tab require the `git.*` permission group. Root admins always see the tab. For sub-users, add a `git` permission group to the relevant eggs in the panel (Admin → Nests → Egg → Permissions).
 
-### 3. (Optional) GitHub OAuth sign-in
+### 3. GitHub OAuth (optional)
 
-1. Create an **OAuth App** on GitHub (Settings → Developer settings → OAuth Apps). Callback URL:
+1. Create an OAuth App (GitHub → Settings → Developer settings → OAuth Apps). Callback URL:
    ```
    https://<your-panel>/account/github/oauth/callback
    ```
 2. Add to `.env`:
-   ```env
+   ```
    GITHUB_OAUTH_ENABLED=true
    GITHUB_OAUTH_CLIENT_ID=your_client_id
    GITHUB_OAUTH_CLIENT_SECRET=your_client_secret
    ```
-3. `php artisan config:cache`
+3. Run `php artisan config:cache`.
 
-Users can always connect with a Personal Access Token (`repo` scope) even without OAuth.
+Users can always connect with a Personal Access Token (`repo` scope), even without OAuth.
 
 ---
 
-## Project layout
+## Repository layout
 
 ```
 PteroGit/
@@ -123,47 +126,46 @@ PteroGit/
 │   └── apply.php         # idempotent source patcher (routes/config/models)
 └── src/                  # new feature files, copied into the panel
     ├── app/
-    │   ├── Http/Controllers/...        # account/server/admin controllers + OAuth
+    │   ├── Http/Controllers/...        # account/server/admin controllers and OAuth
     │   ├── Http/Requests/...           # validated feature requests
     │   ├── Models/...                  # GithubAccount, ServerGitRepository, GitOperation
     │   └── Services/Git/...            # GitService (sudo runner), GitHubService, OAuth
-    ├── database/migrations/            # creates the 3 tables
+    ├── database/migrations/            # creates the three tables
     ├── resources/scripts/api/          # frontend API bindings
-    ├── resources/scripts/components/   # GitContainer + GithubContainer UIs
-    └── resources/views/admin/settings/ # admin settings blade
+    ├── resources/scripts/components/   # GitContainer and GithubContainer UIs
+    └── resources/views/admin/settings/ # admin settings blade template
 ```
 
 ---
 
 ## Uninstalling
 
-1. Restore the backup created by the installer:
-   ```bash
-   cp -a storage/github-integration-backup-<timestamp>/routes/api-client.php routes/api-client.php
-   # …repeat for every file in your backup folder
-   ```
-2. Remove the feature files under `app/Services/Git`, `app/Models/{GithubAccount,ServerGitRepository,GitOperation}.php`, the controllers/requests, `resources/scripts/components/{server/git,dashboard/GithubContainer.tsx}`, `resources/scripts/api/{server/git.ts,account/github.ts}` and `resources/views/admin/settings/github.blade.php`.
-3. Drop the tables:
-   ```bash
-   php artisan migrate:rollback --step=1
-   ```
+1. Restore the files changed by the installer from the backup folder.
+2. Remove the feature files (services, models, controllers, requests, frontend components and the admin blade).
+3. Drop the tables: `php artisan migrate:rollback --step=1`.
 4. Rebuild the frontend: `cd /var/www/pterodactyl && yarn run build:production`.
-5. Remove the `sudoers.d` rule and the `pterodactyl` user if you no longer need them.
+5. Remove the `sudoers.d` rule and the `pterodactyl` user if no longer needed.
 
 ---
 
 ## Troubleshooting
 
-| Symptom | Fix |
+| Symptom | Resolution |
 |---|---|
-| GitHub tab missing for sub-users | Add the `git.*` permission group to the egg (see above) |
-| "No repository is connected" | Link a GitHub account, then connect a repo on the server's GitHub tab |
-| `Permission denied` running git | Ensure the server folder is owned by the `pterodactyl` user and the `sudoers.d` rule exists |
-| Page/`/git?history` shows an error | Ensure the frontend was rebuilt and `journalctl -u php*-fpm` shows no PHP fatal; check `storage/logs/laravel-*.log` |
-| OAuth redirect fails | Confirm `GITHUB_OAUTH_*` vars and the callback URL (must use the same host as `APP_URL`) |
+| GitHub tab missing for sub-users | Add the `git.*` permission group to the egg. |
+| "No repository is connected" | Link a GitHub account, then connect a repository on the server's GitHub tab. |
+| `Permission denied` when running git | Verify the server directory is owned by `pterodactyl` and the sudoers rule is installed. |
+| `/git?history` page errors | Confirm the frontend was rebuilt and check FPM/PHP logs under `storage/logs/`. |
+| OAuth redirect fails | Verify `GITHUB_OAUTH_*` variables and that the callback host matches `APP_URL`. |
+
+---
+
+## Development
+
+See [start.md](start.md) for the repository conventions, how the source tree maps to the panel, and how to package a new release.
 
 ---
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[MIT](LICENSE)
