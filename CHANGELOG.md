@@ -11,6 +11,12 @@ Releases are created automatically from `v*` tags (see `.github/workflows/releas
 ### Added
 - None yet.
 
+## [1.1.1] – 2026-09-09
+
+### Fixed
+- `--dry-run` through the remote one-liner (`bash <(curl -sSL …/install.sh) --dry-run`) no
+  longer fails on the missing local source bundle before printing its plan.
+
 ## [1.1.0] – 2026-09-09
 
 ### Changed
