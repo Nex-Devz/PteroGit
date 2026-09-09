@@ -37,34 +37,57 @@ Redis is recommended for the panel cache and queue but not required.
 
 ## Installation
 
-Run as `root` (or with `sudo`):
+Run as `root` (or with `sudo`). The installer is self-contained — it needs no clone; when
+piped through the one-liner it fetches the source bundle and detects your panel automatically:
 
 ```bash
 bash <(curl -sSL https://raw.githubusercontent.com/Nex-Devz/PteroGit/main/install.sh)
 ```
 
-Install against a custom panel path:
+Pin a specific release instead of `main`:
 
 ```bash
-bash <(curl -sSL https://raw.githubusercontent.com/Nex-Devz/PteroGit/main/install.sh) /opt/pterodactyl
+PTEROGIT_VERSION=v1.1.0 bash <(curl -sSL https://raw.githubusercontent.com/Nex-Devz/PteroGit/main/install.sh)
 ```
 
-Skip the frontend rebuild (performed manually later):
+Update an existing install or repair a panel: re-run the same command — everything is idempotent.
+
+### Options
+
+| Flag | Description |
+|---|---|
+| `-p, --panel PATH` | Panel root (default: auto-detect, preferring `/var/www/pterodactyl`). Positional path also works. |
+| `--force` | Bypass the panel `1.15.x` version check. |
+| `--yes-sudoers` / `--no-sudoers` | Install / skip the scoped sudoers rule without prompting. |
+| `--skip-build` | Skip the frontend rebuild (run `yarn run build:production` later). |
+| `--dry-run` | Validate everything, print the plan, change nothing. |
+| `--rollback [BACKUP_DIR]` | Restore files from the last (or given) timestamped backup. |
+| `-q, --quiet` | Minimal output (full log still written to `/var/log/pterogit-install-*.log`). |
+| `-a, --allow-non-root` | Continue without root (sudoers step is skipped). |
+| `-h, --help` / `-v, --version` | Help / installer version. |
+
+Environment variables: `PTEROGIT_VERSION`, `GIT_FEATURE_SUDOERS=yes|no|ask`,
+`GIT_FEATURE_SKIP_BUILD=1`, `PTEROGIT_LOG=/path/log`, `NO_COLOR=1`.
 
 ```bash
-GIT_FEATURE_SKIP_BUILD=1 bash install.sh
+# examples
+bash install.sh /opt/pterodactyl --yes-sudoers
+bash install.sh --dry-run                     # preview before touching anything
+bash install.sh --rollback                    # undo the previous install
 ```
 
 ### What the installer does
 
-1. Creates a timestamped backup of every file it touches in `storage/github-integration-backup-<timestamp>/`.
-2. Copies the new feature files from `src/` into the panel tree.
-3. Patches routes, configuration, view composer, routers and models (idempotent).
-4. Appends the required `.env` variables when absent.
-5. Runs `composer dump-autoload` and `php artisan migrate --force`.
-6. Rebuilds the frontend (`yarn install && yarn run build:production`).
-7. Rebuilds Laravel caches, restarts the queue and fixes file ownership.
-8. Optionally creates the `pterodactyl` system user and installs the scoped sudoers rule.
+1. Preflight: detects the panel, validates the panel version (`1.15.x`), checks PHP/disk space and acquires a lock so concurrent runs are impossible.
+2. Creates a timestamped backup of every file it touches in `storage/github-integration-backup-<timestamp>/` (restorable at any time with `--rollback`).
+3. Copies the new feature files from the source bundle (`src/`) into the panel tree.
+4. Patches routes, configuration, view composer, routers and models (idempotent), then **re-runs the patcher to prove the panel is only patched once**.
+5. Appends the required `.env` variables when absent.
+6. Runs `composer dump-autoload` and `php artisan migrate --force`.
+7. Rebuilds the frontend (`yarn install && yarn run build:production`) unless skipped.
+8. Rebuilds Laravel caches, restarts the queue and fixes file ownership (only when it differs).
+9. Optionally creates the `pterodactyl` system user and installs the scoped sudoers rule.
+10. Writes a full log to `/var/log/pterogit-install-*.log` with every step.
 
 ### Database tables
 

@@ -11,6 +11,20 @@ Releases are created automatically from `v*` tags (see `.github/workflows/releas
 ### Added
 - None yet.
 
+## [1.1.0] – 2026-09-09
+
+### Changed
+- Installer is now fully self-contained: the one-liner
+  `bash <(curl -sSL https://raw.githubusercontent.com/Nex-Devz/PteroGit/main/install.sh)`
+  downloads the PteroGit source bundle itself, no clone required.
+- Robust installer handler: CLI flags (`-p/--panel`, `--skip-build`, `--dry-run`, `--rollback`,
+  `-q/--quiet`, `-a/--allow-non-root`, `-h`, `-v`), `PTEROGIT_VERSION` pinning, panel
+  auto-detection, lock file, ERR/INT traps, disk-space check, conditional chown, full file log.
+- Panel version detection now reads `config/app.php` `'version'` first (survives `composer
+  update`), with `php artisan --version` as a fallback.
+- Patcher verifies idempotency automatically by re-running against the panel (all ops must be
+  `SKIPPED`).
+
 ## [1.0.0] – 2026-09-09
 
 ### Added

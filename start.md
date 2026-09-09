@@ -39,6 +39,28 @@ src/<relative path in panel>/file
 
 Examples: `src/app/Services/Git/GitService.php` → `/var/www/pterodactyl/app/Services/Git/GitService.php`.
 
+### 2.1.1 Installer capabilities (install.sh)
+
+`install.sh` is self-contained: run via `bash <(curl -sSL …/main/install.sh)` and it downloads the
+PteroGit source bundle itself (no clone needed). When run from a checkout it uses the local files.
+Behaviors to preserve:
+
+- **Idempotent + safe**: backups everything under `storage/github-integration-backup-<stamp>/`,
+  copies `src/` only when a file is absent, and re-runs the patcher a second time to prove the
+  panel was patched exactly once (expect all `SKIPPED`).
+- **Version gate**: reads `config/app.php` `'version'` first (survives `composer update` on the
+  panel; `artisan --version` only shows the Laravel version after such updates), falling back to
+  `php artisan --version`; dies unless a `1.15.x` panel is found (or `--force`).
+- **Panel auto-detect**: candidates `/var/www/pterodactyl`, `/www/pterodactyl`,
+  `/var/www/html/pterodactyl`, `/opt/pterodactyl`, `/var/www/app`.
+- **Flags/env**: `-p/--panel`, `--force`, `--yes-sudoers`/`--no-sudoers` (`GIT_FEATURE_SUDOERS`),
+  `--skip-build` (`GIT_FEATURE_SKIP_BUILD=1`), `--dry-run`, `--rollback [DIR]`, `-q/--quiet`,
+  `-a/--allow-non-root`, `PTEROGIT_VERSION` (bundle ref), `PTEROGIT_LOG`, `NO_COLOR`.
+- **Guardrails**: root check (unless `-a`), flock lock (`/tmp/pterogit-install.lock`), ERR/INT
+  traps with rollback hint, disk-space warning, conditional `chown` (skipped when ownership
+  already correct), full log at `/var/log/pterogit-install-*.log`.
+- **Version bumps**: bump `PTEROGIT_INSTALLER_VER` when installer behavior changes.
+
 Full new-file inventory (36 files):
 
 | Area | File |
