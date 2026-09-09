@@ -63,7 +63,11 @@ case "$PHP_MAJOR_MINOR" in
 esac
 
 # Validate the panel minor version so legacy anchors don't silently break.
-PANEL_VERSION_TEXT="$(cd "$PANEL" && "$PHP" artisan --version 2>/dev/null || true)"
+if PANEL_VERSION_TEXT="$(cd "$PANEL" && "$PHP" artisan --version 2>/dev/null)"; then
+    :
+else
+    PANEL_VERSION_TEXT=""
+fi
 PANEL_MINOR="$(printf '%s' "$PANEL_VERSION_TEXT" | grep -Eo '1\.15\.[0-9]+' | head -1 || true)"
 if [[ -n "$PANEL_MINOR" ]]; then
     ok "Detected Panel $PANEL_MINOR (supported: 1.15.x)"
@@ -180,7 +184,7 @@ info "Rebuilding Laravel caches..."
 if ! (cd "$PANEL" && "$PHP" artisan config:cache >/dev/null 2>&1); then warn "config:cache failed"; fi
 if ! (cd "$PANEL" && "$PHP" artisan route:cache >/dev/null 2>&1); then warn "route:cache failed"; fi
 if ! (cd "$PANEL" && "$PHP" artisan view:cache >/dev/null 2>&1); then warn "view:cache failed"; fi
-(cd "$PANEL" && "$PHP" artisan queue:restart >/dev/null 2>&1 || true)
+if ! (cd "$PANEL" && "$PHP" artisan queue:restart >/dev/null 2>&1); then info "Queue restart skipped (queue driver is not synchronous)."; fi
 
 # ------------------------------------------------------------- file ownership
 info "Fixing file ownership (chown -R $WEB_USER:$WEB_USER panel)..."

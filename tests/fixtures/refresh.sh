@@ -13,7 +13,7 @@ BASE="https://raw.githubusercontent.com/pterodactyl/panel/$TAG"
 
 [[ -d "$FIXTURE" ]] || { echo "fixture directory missing: $FIXTURE" >&2; exit 1; } 
 
-rm -rf "$FIXTURE"/*
+rm -rf "${FIXTURE:?}"/*
 mkdir -p "$FIXTURE"/{app/Http/ViewComposers,app/Models,config,resources/scripts/routers,resources/scripts/state,resources/views/partials/admin/settings,routes}
 
 FILES=(
