@@ -9,6 +9,10 @@
 #   bash install.sh                     # installs into /var/www/pterodactyl
 #   bash install.sh /opt/panel          # installs into /opt/panel
 #   GIT_FEATURE_SKIP_BUILD=1 bash install.sh   # skip frontend build
+#   GIT_FEATURE_SUDOERS=yes|no|ask bash install.sh  # control sudoers setup
+#   bash install.sh [panel] --yes-sudoers          # non-interactive (sudoers: yes)
+#   bash install.sh [panel] --no-sudoers           # non-interactive (sudoers: no)
+#   bash install.sh [panel] --force                # bypass panel version check
 #
 # Requirements:
 #   - Root or sudo access.
@@ -19,9 +23,22 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PANEL="${1:-/var/www/pterodactyl}"
 SRC="$REPO_DIR/src"
 PATCHER="$REPO_DIR/patcher/apply.php"
+
+# Flags / environment-driven behaviour (keeps the installer safe in automation).
+SUDOERS_MODE="${GIT_FEATURE_SUDOERS:-ask}"
+FORCE=0
+PANEL=""
+for arg in "$@"; do
+    case "$arg" in
+        --yes-sudoers) SUDOERS_MODE="yes" ;;
+        --no-sudoers)  SUDOERS_MODE="no" ;;
+        --force)       FORCE=1 ;;
+        *) if [[ -z "$PANEL" ]]; then PANEL="$arg"; fi ;;
+    esac
+done
+PANEL="${PANEL:-/var/www/pterodactyl}"
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 info()  { echo -e "${CYAN}[*]${NC} $*"; }
@@ -44,6 +61,19 @@ case "$PHP_MAJOR_MINOR" in
     8.2|8.3|8.4) ;;
     *) warn "PHP $PHP_MAJOR_MINOR detected – Pterodactyl requires PHP 8.2+." ;;
 esac
+
+# Validate the panel minor version so legacy anchors don't silently break.
+PANEL_VERSION_TEXT="$(cd "$PANEL" && "$PHP" artisan --version 2>/dev/null || true)"
+PANEL_MINOR="$(printf '%s' "$PANEL_VERSION_TEXT" | grep -Eo '1\.15\.[0-9]+' | head -1 || true)"
+if [[ -n "$PANEL_MINOR" ]]; then
+    ok "Detected Panel $PANEL_MINOR (supported: 1.15.x)"
+elif [[ "$FORCE" -eq 1 ]]; then
+    warn "Panel version not detected ($PANEL_VERSION_TEXT) – proceeding because --force was set."
+else
+    warn "Panel version not detected: '$PANEL_VERSION_TEXT'"
+    warn "PteroGit targets Pterodactyl Panel 1.15.x. Use --force to continue anyway."
+    die "Unsupported panel version."
+fi
 
 # --------------------------------------------------------------- locate web user
 WEB_USER=""
@@ -72,6 +102,7 @@ backup_path routes/base.php
 backup_path config/pterodactyl.php
 backup_path app/Http/ViewComposers/AssetComposer.php
 backup_path app/Models/User.php
+backup_path app/Models/Permission.php
 backup_path resources/scripts/state/settings.ts
 backup_path resources/scripts/routers/routes.ts
 backup_path resources/scripts/routers/ServerRouter.tsx
@@ -134,28 +165,44 @@ if [[ "${GIT_FEATURE_SKIP_BUILD:-0}" == "1" ]]; then
     warn "GIT_FEATURE_SKIP_BUILD=1 – frontend build skipped. You must run 'yarn run build:production' later."
 elif [[ -n "$NODE" && -n "$YARN" ]]; then
     info "Rebuilding frontend assets (this can take several minutes)..."
-    (cd "$PANEL" && yarn install --frozen-lockfile --non-interactive >/dev/null 2>&1 || yarn install --non-interactive >/dev/null 2>&1)
-    (cd "$PANEL" && yarn run build:production) || warn "Frontend build failed – see output above."
+    if ! (cd "$PANEL" && yarn install --frozen-lockfile --non-interactive >/dev/null 2>&1); then
+        (cd "$PANEL" && yarn install --non-interactive >/dev/null 2>&1) || warn "yarn install failed – continuing."
+    fi
+    if ! (cd "$PANEL" && yarn run build:production); then
+        warn "Frontend build failed – see output above."
+    fi
 else
     warn "Node/Yarn not found – frontend not rebuilt. Install Node 18+/Yarn 1.x and run 'yarn install && yarn run build:production' inside $PANEL."
 fi
 
 # ------------------------------------------------------------------- caching
 info "Rebuilding Laravel caches..."
-(cd "$PANEL" && "$PHP" artisan config:cache >/dev/null 2>&1 || warn "config:cache failed")
-(cd "$PANEL" && "$PHP" artisan route:cache >/dev/null 2>&1 || warn "route:cache failed")
-(cd "$PANEL" && "$PHP" artisan view:cache >/dev/null 2>&1 || warn "view:cache failed")
+if ! (cd "$PANEL" && "$PHP" artisan config:cache >/dev/null 2>&1); then warn "config:cache failed"; fi
+if ! (cd "$PANEL" && "$PHP" artisan route:cache >/dev/null 2>&1); then warn "route:cache failed"; fi
+if ! (cd "$PANEL" && "$PHP" artisan view:cache >/dev/null 2>&1); then warn "view:cache failed"; fi
 (cd "$PANEL" && "$PHP" artisan queue:restart >/dev/null 2>&1 || true)
 
 # ------------------------------------------------------------- file ownership
 info "Fixing file ownership (chown -R $WEB_USER:$WEB_USER panel)..."
-chown -R "$WEB_USER:$WEB_USER" "$PANEL/app" "$PANEL/routes" "$PANEL/config" \
-      "$PANEL/resources" "$PANEL/database" "$PANEL/bootstrap" "$PANEL/storage" >/dev/null 2>&1 || warn "chown skipped (permissions)."
+if ! chown -R "$WEB_USER:$WEB_USER" "$PANEL/app" "$PANEL/routes" "$PANEL/config" \
+      "$PANEL/resources" "$PANEL/database" "$PANEL/bootstrap" "$PANEL/storage" >/dev/null 2>&1; then
+    warn "chown skipped (permissions)."
+fi
 chown "$WEB_USER:$WEB_USER" "$PANEL/.env" 2>/dev/null || true
 
 # ------------------------------------------------------- optional sudoers rule
-read -r -p "Configure sudoers so the web user can run panel git commands (safe, scoped)? [y/N]: " ans
-if [[ "${ans,,}" == "y" ]]; then
+if [[ "$SUDOERS_MODE" == "yes" ]]; then
+    INSTALL_SUDOERS=1
+elif [[ "$SUDOERS_MODE" == "no" ]]; then
+    INSTALL_SUDOERS=0
+elif [[ -t 0 ]]; then
+    read -r -p "Configure sudoers so the web user can run panel git commands (safe, scoped)? [y/N]: " ans
+    if [[ "${ans,,}" == "y" ]]; then INSTALL_SUDOERS=1; else INSTALL_SUDOERS=0; fi
+else
+    warn "Non-interactive shell – skipping sudoers setup. Re-run with --yes-sudoers to install it."
+    INSTALL_SUDOERS=0
+fi
+if [[ "$INSTALL_SUDOERS" -eq 1 ]]; then
     if ! id -u pterodactyl >/dev/null 2>&1; then
         useradd -r -m -s /usr/sbin/nologin pterodactyl 2>/dev/null || useradd -r -s /usr/sbin/nologin pterodactyl
         ok "Created system user 'pterodactyl'."
@@ -177,9 +224,10 @@ echo -e "${GREEN} GitHub Integration installed successfully!${NC}"
 echo    "======================================================================"
 echo
 echo "Next steps:"
-echo "  1. Add the 'git.*' permission group to the panel Eggs you want the"
-echo "     GitHub tab to appear for (Admin -> Nests -> Egg -> Permissions)."
-echo "     Without it, only root admins will see the GitHub tab."
+echo "  1. Grant the 'git' permission group to your sub-users:"
+echo "     Server -> Users -> Edit -> enable the 'git' permissions."
+echo "     The 'git' group is auto-registered by the installer; root admins"
+echo "     always see the GitHub tab."
 echo
 echo "  2. Your server 'data_directory' (below) must be readable by the"
 echo "     'pterodactyl' system user. Pointing it at the Wings data folder:"

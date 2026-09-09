@@ -73,10 +73,11 @@ Patched file inventory:
 | `config/pterodactyl.php` | `git` config block (data_directory, enabled, oauth) |
 | `app/Http/ViewComposers/AssetComposer.php` | `git.enabled` inside `siteConfiguration` |
 | `app/Models/User.php` | `githubAccounts(): HasMany` relation after `sshKeys()` |
+| `app/Models/Permission.php` | `git` sub-user permission group (9 actions) after the `activity` group |
 | `resources/scripts/state/settings.ts` | `git: { enabled: boolean }` inside the `SiteSettings` interface |
 | `resources/scripts/routers/routes.ts` | 2 imports, account `/github` route, server `/git` route (`feature: 'git'`, `permission: 'git.*'`) |
-| `resources/scripts/routers/ServerRouter.tsx` | `gitEnabled` line + two `.filter((route) => !(route.feature === 'git' && !gitEnabled && !rootAdmin))` |
-| `resources/scripts/routers/DashboardRouter.tsx` | `gitEnabled` line + one feature filter |
+| `resources/scripts/routers/ServerRouter.tsx` | `gitEnabled` line + two feature filters (nav + switch) |
+| `resources/scripts/routers/DashboardRouter.tsx` | `useStoreState` import, `rootAdmin` + `gitEnabled` lines, nav feature filter. Note: stock 1.15.x does NOT already define `rootAdmin` – the patcher adds it. |
 | `resources/views/partials/admin/settings/nav.blade.php` | GitHub tab `<li>` after the Advanced tab |
 
 ---
@@ -135,10 +136,16 @@ Pterodactyl may change stock files between minor versions. Before claiming suppo
   full paths, and sensible timeouts. It must never run as `root` or the web user.
 - **Data directory**: build paths as `PTERODACTYL_GIT_DATA_DIRECTORY . '/' . $server->uuid`;
   the per-server folders are owned by `pterodactyl`.
-- **Route permissions**: the server `/git` route uses `permission: 'git.*'`. Sub-users only see
-  the tab if the egg defines the git permission group; root admins always see it.
+- **Route permissions**: the server `/git` route uses `permission: 'git.*'`. The matching
+  permission group is auto-registered in `app/Models/Permission.php` by the patcher.
 - **Frontend route gating**: both routers hide `feature: 'git'` routes when
-  `git.enabled` is false and the user is not root admin.
+  `git.enabled` is false and the user is not root admin. `gitEnabled` is derived from
+  `state.settings.data?.git?.enabled`; stock `DashboardRouter.tsx` does not declare `rootAdmin`,
+  so the patcher adds that hook plus the `easy-peasy` import for it.
+- **Idempotency markers must not collide**: every `check` substring must uniquely identify its
+  own patch. In `ServerRouter.tsx` the switch-filter check is the `40-space` indented
+  `.filter((route) => ...)` line, distinct from the `36-space` nav-filter line inserted earlier —
+  otherwise the second operation would be flagged "already applied" after the first.
 
 ---
 
@@ -146,46 +153,58 @@ Pterodactyl may change stock files between minor versions. Before claiming suppo
 
 1. **Lint PHP**: `php -l` every changed file under `src/` and `patcher/apply.php`.
 2. **Stock patch test**: rebuild the stock simulation and run the patcher;
-   every op must report `PATCHED`, and a second run must report `SKIPPED` (idempotency):
+   every op must report `PATCHED`, and a second run must report `SKIPPED` (idempotency).
+   The repository ships real stock files under `tests/fixtures/stockpanel/`; refresh them with:
    ```bash
-   php patcher/apply.php /var/www/pterodactyl                 # expect SKIPPED (already applied)
-   php patcher/apply.php /tmp/stockpanel                      # expect all PATCHED
-   php patcher/apply.php /tmp/stockpanel                      # repeat: expect all SKIPPED
+   bash tests/fixtures/refresh.sh          # downloads pterodactyl/panel v1.15.1 files
+   php patcher/apply.php /var/www/pterodactyl                 # live, expect SKIPPED (already applied)
+   php patcher/apply.php tests/fixtures/stockpanel            # expect all PATCHED
+   php patcher/apply.php tests/fixtures/stockpanel            # repeat: expect all SKIPPED
    ```
+   The CI job `patcher-idempotency` runs exactly this against `tests/fixtures/stockpanel`.
 3. **Live smoke test**: on the reference panel, run a history request with a client API token and
    confirm the JSON `commits` is an array; then load `/server/<uuid>/git?history` in the browser.
 4. **TypeScript**: `cd /var/www/pterodactyl && yarn run build:production` must succeed.
 5. **Migration**: `php artisan migrate:status` shows the three tables as Ran.
+6. **Shell**: `bash -n install.sh` and `bash -n tests/fixtures/refresh.sh` pass.
 
 ---
 
 ## 6. Releasing / pushing
 
 1. `cd /root/PteroGit`.
-2. Stage the relevant files. Do NOT commit credentials, `.env` files, or the live panel tree.
-   This repository contains only the installer, patcher, docs and `src/` feature files.
-3. Commit with conventional style:
+2. Update `CHANGELOG.md` (keep-achangelog format) with the new version heading.
+3. Stage the relevant files. Do NOT commit credentials, `.env` files, or the live panel tree.
+   This repository contains only the installer, patcher, docs, fixtures and `src/` feature files.
+4. Commit with conventional style:
    ```
    feat: add XYZ
    fix: correct history response shape
    docs: update install instructions
    ```
-4. Push to `origin/main`:
+5. Push the code to `origin/main`:
    ```bash
    git push origin main
    ```
-5. If README changed, the installer one-liner
+6. Tag to trigger the automatic GitHub release (`.github/workflows/release.yml`):
+   ```bash
+   git tag v1.0.0 && git push origin v1.0.0
+   ```
+   The workflow reads the matching `## X.Y.Z` section from `CHANGELOG.md` and creates the Release.
+7. If the README changed, the installer one-liner
    (`bash <(curl -sSL https://raw.githubusercontent.com/Nex-Devz/PteroGit/main/install.sh)`)
    is automatically up to date — no extra step.
 
 ### Push checklist
 
-- [ ] `php -l` clean on all changed PHP
-- [ ] Patcher passes PATCHED → SKIPPED on stock simulation
+- [ ] `php -l` clean on all changed PHP (`src/` + `patcher/`)
+- [ ] `bash -n install.sh` and `bash -n tests/fixtures/refresh.sh` pass
+- [ ] Patcher passes PATCHED then SKIPPED on `tests/fixtures/stockpanel`
 - [ ] `yarn run build:production` succeeds against the reference panel
 - [ ] No secrets, `.env`, panel logs or the whole panel tree staged
 - [ ] README still lists the correct supported panel version
 - [ ] `install.sh` still references the exact copy destinations in `src/`
+- [ ] CHANGELOG updated and a release tag pushed for user-visible changes
 
 ---
 

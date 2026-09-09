@@ -95,9 +95,11 @@ echo "PTERODACTYL_GIT_DATA_DIRECTORY=/your/path" >> .env
 php artisan config:cache
 ```
 
-### 2. Egg permissions
+### 2. Sub-user permissions
 
-The server `/git` route and tab require the `git.*` permission group. Root admins always see the tab. For sub-users, add a `git` permission group to the relevant eggs in the panel (Admin → Nests → Egg → Permissions).
+The installer registers the `git.*` permission group automatically. Grant it to sub-users in
+**Server → Users** (see [docs/permissions.md](docs/permissions.md)). Root admins always see the
+GitHub tab.
 
 ### 3. GitHub OAuth (optional)
 
@@ -122,8 +124,13 @@ Users can always connect with a Personal Access Token (`repo` scope), even witho
 ```
 PteroGit/
 ├── install.sh            # one-command installer
+├── CHANGELOG.md          # release history
 ├── patcher/
-│   └── apply.php         # idempotent source patcher (routes/config/models)
+│   └── apply.php         # idempotent source patcher (routes/config/models/routers)
+├── docs/
+│   └── permissions.md    # sub-user permission guide
+├── tests/
+│   └── fixtures/         # stock panel 1.15.1 files used by CI (refresh.sh)
 └── src/                  # new feature files, copied into the panel
     ├── app/
     │   ├── Http/Controllers/...        # account/server/admin controllers and OAuth
@@ -168,7 +175,8 @@ authoritative reference for repository conventions, how the source tree maps to 
 and the release/push checklist.
 
 To report a bug or request a feature, use the [issue templates](.github/ISSUE_TEMPLATE/).
-For security vulnerabilities follow [SECURITY.md](SECURITY.md).
+For security vulnerabilities follow [SECURITY.md](SECURITY.md). See [CHANGELOG.md](CHANGELOG.md)
+for release history.
 
 ---
 

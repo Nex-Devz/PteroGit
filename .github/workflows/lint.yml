@@ -33,11 +33,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Syntax check
-        run: bash -n install.sh
+        run: |
+          bash -n install.sh
+          bash -n tests/fixtures/refresh.sh
       - name: Shellcheck
         uses: ludeeus/action-shellcheck@2.0.0
         with:
-          files: install.sh
+          files: install.sh tests/fixtures/refresh.sh
 
   patcher-idempotency:
     name: Patcher idempotency
@@ -52,11 +54,7 @@ jobs:
       - name: Run patcher on fixture
         run: |
           set -e
-          # Use a minimal fixture tree containing the stock anchors.
-          # The reference fixture is maintained in tests/fixtures/stockpanel.
-          if [ -d tests/fixtures/stockpanel ]; then
-            php patcher/apply.php "$(pwd)/tests/fixtures/stockpanel"
-            php patcher/apply.php "$(pwd)/tests/fixtures/stockpanel"
-          else
-            echo "No stock fixture present; skipping (run locally against /tmp/stockpanel)."
-          fi
+          # Fresh copy so the fixture in the repo stays pristine (PATCHED then SKIPPED).
+          cp -r tests/fixtures/stockpanel /tmp/stockpanel-run
+          php patcher/apply.php /tmp/stockpanel-run
+          php patcher/apply.php /tmp/stockpanel-run

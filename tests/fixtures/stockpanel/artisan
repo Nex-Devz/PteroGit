@@ -1,0 +1,3 @@
+#!/usr/bin/env php
+<?php
+echo "Pterodactyl Panel v1.15.1";

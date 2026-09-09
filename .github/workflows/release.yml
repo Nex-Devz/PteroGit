@@ -1,0 +1,32 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create GitHub release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Prepare release notes
+        id: notes
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          sed "s/__VERSION__/$TAG/" CHANGELOG.md > /tmp/release-notes-head.md
+          grep -qm1 "## $TAG" CHANGELOG.md && awk -v v="## $TAG" '$0==v{f=1;next} /^## /{if(f)exit} f' CHANGELOG.md >> /tmp/release-notes-head.md || true
+          echo "version=$TAG" >> "$GITHUB_OUTPUT"
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "PteroGit ${{ steps.notes.outputs.version }}"
+          body_path: /tmp/release-notes-head.md
+          draft: false
+          prerelease: false

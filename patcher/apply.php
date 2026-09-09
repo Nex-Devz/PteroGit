@@ -159,15 +159,15 @@ PHP,
     [
         'file' => 'routes/admin.php',
         'mode' => 'after',
-        'needle' => "        Route::get('/advanced', [Admin\\Settings\\AdvancedController::class, 'index'])->name('admin.settings.advanced');",
-        'insert' => "\n        Route::get('/github', [Admin\\Settings\\GithubController::class, 'index'])->name('admin.settings.github');",
+        'needle' => "    Route::get('/advanced', [Admin\\Settings\\AdvancedController::class, 'index'])->name('admin.settings.advanced');",
+        'insert' => "\n    Route::get('/github', [Admin\\Settings\\GithubController::class, 'index'])->name('admin.settings.github');",
         'check' => "name('admin.settings.github')",
     ],
     [
         'file' => 'routes/admin.php',
         'mode' => 'after',
-        'needle' => "        Route::patch('/advanced', [Admin\\Settings\\AdvancedController::class, 'update']);",
-        'insert' => "\n        Route::patch('/github', [Admin\\Settings\\GithubController::class, 'update']);",
+        'needle' => "    Route::patch('/advanced', [Admin\\Settings\\AdvancedController::class, 'update']);",
+        'insert' => "\n    Route::patch('/github', [Admin\\Settings\\GithubController::class, 'update']);",
         'check' => "Route::patch('/github'",
     ],
     [
@@ -276,21 +276,21 @@ PHP,
         'file' => 'resources/scripts/routers/routes.ts',
         'mode' => 'after',
         'needle' => <<<'PHP'
-    {
-        path: '/activity',
-        permission: 'activity.*',
-        name: 'Activity',
-        component: ServerActivityLogContainer,
-    },
+        {
+            path: '/activity',
+            permission: 'activity.*',
+            name: 'Activity',
+            component: ServerActivityLogContainer,
+        },
 PHP,
         'insert' => <<<'PHP'
-    {
-        path: '/git',
-        permission: 'git.*',
-        name: 'GitHub',
-        component: GithubContainer,
-        feature: 'git',
-    },
+        {
+            path: '/git',
+            permission: 'git.*',
+            name: 'GitHub',
+            component: GithubContainer,
+            feature: 'git',
+        },
 PHP,
         'check' => "path: '/git',",
     ],
@@ -307,8 +307,8 @@ PHP,
         'file' => 'resources/scripts/routers/ServerRouter.tsx',
         'mode' => 'after',
         'needle' => <<<'PHP'
-                                .filter((route) => !!route.name)
-                                .map((route) =>
+                                    .filter((route) => !!route.name)
+                                    .map((route) =>
 PHP,
         'insert' => "\n                                    .filter((route) => !(route.feature === 'git' && !gitEnabled && !rootAdmin))",
         'check' => "!(route.feature === 'git' && !gitEnabled && !rootAdmin)",
@@ -317,23 +317,29 @@ PHP,
         'file' => 'resources/scripts/routers/ServerRouter.tsx',
         'mode' => 'replace',
         'needle' => <<<'PHP'
-                                     {routes.server
-                                         .map(({ path, permission, component: Component }) => (
+                                    {routes.server.map(({ path, permission, component: Component }) => (
 PHP,
         'insert' => <<<'PHP'
-                                     {routes.server
-                                         .filter((route) => !(route.feature === 'git' && !gitEnabled && !rootAdmin))
-                                         .map(({ path, permission, component: Component }) => (
+                                    {routes.server
+                                        .filter((route) => !(route.feature === 'git' && !gitEnabled && !rootAdmin))
+                                        .map(({ path, permission, component: Component }) => (
 PHP,
-        'check' => 'route.feature === \'git\'',
+        'check' => "                                        .filter((route) => !(route.feature === 'git' && !gitEnabled && !rootAdmin))",
     ],
 
     // ------------------------------------------------------ DashboardRouter
     [
         'file' => 'resources/scripts/routers/DashboardRouter.tsx',
         'mode' => 'after',
-        'needle' => "const rootAdmin = useStoreState((state) => state.user.data!.rootAdmin);",
-        'insert' => "\n    const gitEnabled = useStoreState((state) => state.settings.data?.git?.enabled);",
+        'needle' => "import { useLocation } from 'react-router';",
+        'insert' => "\nimport { useStoreState } from 'easy-peasy';",
+        'check' => "import { useStoreState }",
+    ],
+    [
+        'file' => 'resources/scripts/routers/DashboardRouter.tsx',
+        'mode' => 'after',
+        'needle' => "    const location = useLocation();",
+        'insert' => "\n    const rootAdmin = useStoreState((state) => state.user.data!.rootAdmin);\n    const gitEnabled = useStoreState((state) => state.settings.data?.git?.enabled);",
         'check' => 'state.settings.data?.git?.enabled',
     ],
     [
@@ -377,6 +383,46 @@ PHP,
     }
 PHP,
         'check' => 'public function githubAccounts(): HasMany',
+    ],
+
+    // -------------------------------------------------- Permission model (git group)
+    [
+        'file' => 'app/Models/Permission.php',
+        'mode' => 'replace',
+        'needle' => <<<'PHP'
+        'activity' => [
+            'description' => 'Permissions that control a user\'s access to the server activity logs.',
+            'keys' => [
+                'read' => 'Allows a user to view the activity logs for the server.',
+            ],
+        ],
+    ];
+PHP,
+        'insert' => <<<'PHP'
+        'activity' => [
+            'description' => 'Permissions that control a user\'s access to the server activity logs.',
+            'keys' => [
+                'read' => 'Allows a user to view the activity logs for the server.',
+            ],
+        ],
+
+        'git' => [
+            'description' => 'Permissions that control a user\'s access to the GitHub integration for this server.',
+            'keys' => [
+                'read' => 'Allows a user to view the GitHub integration, repository status, changes, branches, history and diffs.',
+                'pull' => 'Allows a user to pull changes from GitHub into the server.',
+                'push' => 'Allows a user to commit and push changes to GitHub.',
+                'commit' => 'Allows a user to stage, unstage, discard and commit local changes.',
+                'manage-branches' => 'Allows a user to create, switch, merge and delete branches.',
+                'manage-repository' => 'Allows a user to connect, initialize, disconnect and reset the repository.',
+                'manage-gitignore' => 'Allows a user to view and edit the .gitignore file.',
+                'revert' => 'Allows a user to revert commits.',
+                'force-reset' => 'Allows a user to perform a destructive hard reset of the repository.',
+            ],
+        ],
+    ];
+PHP,
+        'check' => "'git' => [",
     ],
 
     // ------------------------------------------------------ admin nav partial
