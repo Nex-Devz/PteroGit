@@ -239,8 +239,10 @@ fi
 
 SRC="$REPO_DIR/src"
 PATCHER="$REPO_DIR/patcher/apply.php"
-[[ -d "$SRC" ]]     || die "Missing src/ directory in bundle ('$SRC')."
-[[ -f "$PATCHER" ]] || die "Missing patcher/apply.php in bundle ('$PATCHER')."
+if [[ "$DRY_RUN" -eq 0 ]]; then
+    [[ -d "$SRC" ]]     || die "Missing src/ directory in bundle ('$SRC')."
+    [[ -f "$PATCHER" ]] || die "Missing patcher/apply.php in bundle ('$PATCHER')."
+fi
 
 # web user used by the panel
 WEB_USER=""
