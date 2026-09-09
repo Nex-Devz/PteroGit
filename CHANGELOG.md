@@ -11,6 +11,18 @@ Releases are created automatically from `v*` tags (see `.github/workflows/releas
 ### Added
 - None yet.
 
+## [1.1.2] – 2026-09-09
+
+### Changed
+- Patcher anchors are now matched whitespace-tolerantly (leading indentation and internal
+  whitespace runs are ignored, CRLF tolerated). Real-world panels — custom themes, panels with
+  different formatting, or panels patched by older revisions — no longer throw spurious
+  "anchor not found" errors.
+- Patcher removes duplicate insertions from previous botched runs.
+- Installer refuses a source bundle whose version marker does not match the running installer
+  (guards against stale GitHub-cached bundles).
+- CI: new tolerant-whitespace patcher check (indentation-shifted fixture).
+
 ## [1.1.1] – 2026-09-09
 
 ### Fixed

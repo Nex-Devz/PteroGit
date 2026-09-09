@@ -4,8 +4,11 @@
  * GitHub Integration – panel source patcher.
  *
  * Applies the required route/config/view-composer/router changes onto any
- * Pterodactyl Panel 1.15.x install. Every operation is idempotent and uses
- * exact anchor strings, so it is safe to run multiple times on the same panel.
+ * Pterodactyl Panel 1.15.x install. Every operation is idempotent and safe to
+ * run multiple times. Anchors are matched flexibly (leading whitespace and
+ * internal whitespace runs are ignored, CRLF tolerated) so custom themes and
+ * panels patched by older revisions are handled without false "anchor not
+ * found" failures; duplicate insertions from previous botched runs are removed.
  *
  * Usage: php apply.php <absolute-path-to-panel>
  */
@@ -19,11 +22,33 @@ if ($panel === '' || !file_exists($panel . '/artisan') || !file_exists($panel . 
 }
 
 /**
+ * Builds a whitespace-tolerant regular expression from an anchor string.
+ *
+ * The panel files may differ from the shipped defaults (custom themes, prior
+ * patch runs, alternate indentation or CRLF line endings). To stay safe on
+ * real-world panels every needle is matched while ignoring indentation and
+ * collapsing arbitrary whitespace runs inside a line to a single space.
+ */
+function tolerant_pattern(string $needle): string
+{
+    $lines = preg_split('/\R/', $needle);
+    $parts = [];
+    foreach ($lines as $line) {
+        $norm = trim(preg_replace('/[ \t]+/', ' ', $line));
+        $esc = preg_quote($norm, '~');
+        $esc = str_replace(' ', '\h+', $esc);
+        $parts[] = '^\h*' . $esc . '$';
+    }
+
+    return '(?m)' . implode("\n", $parts);
+}
+
+/**
  * Runs a single patch operation for a file.
  *
  * @param string   $relPath   relative path under the panel root
  * @param string   $mode      "after" | "before" | "replace"
- * @param string   $needle    exact anchor string found in the file
+ * @param string   $needle    anchor string found in the file (whitespace-tolerant)
  * @param string   $insert    replacement/insertion text
  * @param string   $check     marker substring; patch is skipped if already present
  */
@@ -51,7 +76,18 @@ function patch(string $relPath, string $mode, string $needle, string $insert, st
         return $result;
     }
 
+    // Locate the anchor (exact first, then whitespace-tolerant).
     $pos = strpos($content, $needle);
+    $matched = $needle;
+    $tolerant = false;
+    if ($pos === false) {
+        $pattern = tolerant_pattern($needle);
+        if (preg_match('~' . $pattern . '~', $content, $m, PREG_OFFSET_CAPTURE) === 1) {
+            $pos = (int) $m[0][1];
+            $matched = $m[0][0];
+            $tolerant = true;
+        }
+    }
     if ($pos === false) {
         $result['status'] = 'error';
         $result['detail'] = 'anchor not found';
@@ -59,21 +95,32 @@ function patch(string $relPath, string $mode, string $needle, string $insert, st
         return $result;
     }
 
+    $len = strlen($matched);
+
     switch ($mode) {
         case 'after':
-            $content = substr($content, 0, $pos + strlen($needle)) . $insert . substr($content, $pos + strlen($needle));
+            $content = substr($content, 0, $pos + $len) . $insert . substr($content, $pos + $len);
             break;
         case 'before':
             $content = substr($content, 0, $pos) . $insert . substr($content, $pos);
             break;
         case 'replace':
-            $content = str_replace($needle, $insert, $content);
+            $content = substr($content, 0, $pos) . $insert . substr($content, $pos + $len);
             break;
         default:
             $result['status'] = 'error';
             $result['detail'] = "unknown mode {$mode}";
 
             return $result;
+    }
+
+    // Never leave duplicate insertions behind (covers prior botched runs).
+    $count = substr_count($content, $insert);
+    if ($count > 1) {
+        $first = strpos($content, $insert);
+        $head = substr($content, 0, $first + strlen($insert));
+        $tail = substr($content, $first + strlen($insert));
+        $content = $head . str_replace($insert, '', $tail);
     }
 
     if (file_put_contents($file, $content) === false) {
@@ -84,7 +131,7 @@ function patch(string $relPath, string $mode, string $needle, string $insert, st
     }
 
     $result['status'] = 'patched';
-    $result['detail'] = 'ok';
+    $result['detail'] = $tolerant ? 'ok (fuzzy anchor)' : 'ok';
 
     return $result;
 }
@@ -431,17 +478,9 @@ PHP,
         'mode' => 'after',
         'needle' => "<li @if(\$activeTab === 'advanced')class=\"active\"@endif><a href=\"{{ route('admin.settings.advanced') }}\">Advanced</a></li>",
         'insert' => "\n                    <li @if(\$activeTab === 'github')class=\"active\"@endif><a href=\"{{ route('admin.settings.github') }}\">GitHub</a></li>",
-        'check' => "'github',
-                    <li @if" === '' ? 'github-nav' : 'github-nav',
+        'check' => "route('admin.settings.github')",
     ],
 ];
-
-// Use a stable idempotency marker for the admin nav partial.
-foreach ($ops as $i => $op) {
-    if ($op['file'] === 'resources/views/partials/admin/settings/nav.blade.php') {
-        $ops[$i]['check'] = "route('admin.settings.github')";
-    }
-}
 
 $failed = 0;
 foreach ($ops as $op) {

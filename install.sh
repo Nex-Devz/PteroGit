@@ -42,7 +42,7 @@
 
 set -euo pipefail
 
-PTEROGIT_INSTALLER_VER="1.1.0"
+PTEROGIT_INSTALLER_VER="1.1.2"
 PTEROGIT_VERSION="${PTEROGIT_VERSION:-main}"
 PTEROGIT_GITHUB="Nex-Devz/PteroGit"
 
@@ -239,6 +239,16 @@ fi
 
 SRC="$REPO_DIR/src"
 PATCHER="$REPO_DIR/patcher/apply.php"
+
+# Guard against serving a stale/cached source bundle (CDN lag) that could
+# belong to a different installer revision.
+BUNDLE_VER="$(grep -Eo 'PTEROGIT_INSTALLER_VER="[^"]+"' "$REPO_DIR/install.sh" 2>/dev/null | head -1 | cut -d'"' -f2 || true)"
+if [[ -z "$BUNDLE_VER" ]]; then
+    warn "Source bundle has no version marker (older bundle). Using it anyway."
+elif [[ "$BUNDLE_VER" != "$PTEROGIT_INSTALLER_VER" ]]; then
+    die "Source bundle version $BUNDLE_VER does not match this installer ($PTEROGIT_INSTALLER_VER) - likely a stale GitHub cache. Retry in a minute, or clone the repo and run 'bash install.sh' locally."
+fi
+
 if [[ "$DRY_RUN" -eq 0 ]]; then
     [[ -d "$SRC" ]]     || die "Missing src/ directory in bundle ('$SRC')."
     [[ -f "$PATCHER" ]] || die "Missing patcher/apply.php in bundle ('$PATCHER')."

@@ -58,3 +58,19 @@ jobs:
           cp -r tests/fixtures/stockpanel /tmp/stockpanel-run
           php patcher/apply.php /tmp/stockpanel-run
           php patcher/apply.php /tmp/stockpanel-run
+      - name: Patcher tolerant-whitespace check
+        run: |
+          set -e
+          # Shift the indentation of every stock fixture file; the patcher must
+          # still apply every op (no 'anchor not found') and then stay idempotent.
+          cp -r tests/fixtures/stockpanel /tmp/fuzzy-run
+          find /tmp/fuzzy-run -type f \( -name '*.php' -o -name '*.tsx' -o -name '*.ts' -o -name '*.blade.php' \) \
+            -exec sed -i 's/^/  /' {} +
+          OUT1="$(php patcher/apply.php /tmp/fuzzy-run 2>&1 || true)"
+          if printf '%s' "$OUT1" | grep -q "anchor not found"; then
+            echo "tolerant-whitespace run1 failed:"; printf '%s\n' "$OUT1"; exit 1
+          fi
+          OUT2="$(php patcher/apply.php /tmp/fuzzy-run 2>&1 || true)"
+          if printf '%s' "$OUT2" | grep -qE "PATCH|anchor not found"; then
+            echo "tolerant-whitespace run2 not idempotent:"; printf '%s\n' "$OUT2"; exit 1
+          fi

@@ -168,6 +168,14 @@ Pterodactyl may change stock files between minor versions. Before claiming suppo
   own patch. In `ServerRouter.tsx` the switch-filter check is the `40-space` indented
   `.filter((route) => ...)` line, distinct from the `36-space` nav-filter line inserted earlier —
   otherwise the second operation would be flagged "already applied" after the first.
+- **Whitespace-tolerant anchors**: `patcher/apply.php` matches needles while ignoring indentation
+  and internal whitespace runs (`tolerant_pattern`, `~` delimiter — the `/` delimiter breaks
+  PCRE multiline compilation). Keep every needle's non-whitespace tokens verbatim so fuzzy
+  matching stays exact on content. The CI job `Patcher tolerant-whitespace check` shifts the
+  fixture's indentation and requires PATCHED → SKIPPED.
+- **Stale-bundle guard**: `install.sh` compares the source bundle's `PTEROGIT_INSTALLER_VER`
+  against its own and aborts on mismatch (GitHub CDN may briefly serve an older tarball). When
+  bumping the version, bump `install.sh`, the bundle version marker and `CHANGELOG.md` together.
 
 ---
 
