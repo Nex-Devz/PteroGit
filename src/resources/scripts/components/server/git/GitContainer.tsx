@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import tw from 'twin.macro';
 import { useHistory, useLocation } from 'react-router';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faSyncAlt, faDownload, faUpload, faTrashAlt, faCodeBranch, faInfoCircle, faExchangeAlt, faHistory, faPlus, faUndo } from '@fortawesome/free-solid-svg-icons';
+import { faSyncAlt, faDownload, faUpload, faTrashAlt, faCodeBranch, faInfoCircle, faExchangeAlt, faHistory, faPlus, faUndo, faKey } from '@fortawesome/free-solid-svg-icons';
 import { faGithub } from '@fortawesome/free-brands-svg-icons';
 import ServerContentBlock from '@/components/elements/ServerContentBlock';
 import FlashMessageRender from '@/components/FlashMessageRender';
@@ -98,6 +98,7 @@ export default () => {
     const [githubAccounts, setGithubAccounts] = useState<GithubAccount[]>([]);
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState(false);
+    const [authError, setAuthError] = useState(false);
     const [tab, setTab] = useState<TabKey>(() => tabFromSearch(location.search));
     const [connectVisible, setConnectVisible] = useState(false);
     const [disconnectVisible, setDisconnectVisible] = useState(false);
@@ -119,6 +120,7 @@ export default () => {
             setLoading(true);
         }
         setLoadError(false);
+        setAuthError(false);
 
         return getGitStatus(uuid)
             .then(({ data }) => {
@@ -127,7 +129,11 @@ export default () => {
                 setGithubAccounts(Array.isArray(data.accounts) ? data.accounts : []);
             })
             .catch((error) => {
-                clearAndAddHttpError(error);
+                if (error?.response?.status === 401) {
+                    setAuthError(true);
+                } else {
+                    clearAndAddHttpError(error);
+                }
                 setLoadError(true);
             })
             .then(() => setLoading(false));
@@ -182,7 +188,24 @@ export default () => {
             <ServerContentBlock title={'GitHub'}>
                 <FlashMessageRender byKey={'git'} css={tw`mb-4`} />
                 <SpinnerOverlay visible={loading} />
-                {!loading && loadError && (
+                {!loading && authError && (
+                    <ContentBox title={'Login Required'}>
+                        <div css={tw`text-center p-4`}>
+                            <FontAwesomeIcon icon={faGithub} size={'2x'} css={tw`mb-3 text-neutral-400`} />
+                            <p css={tw`text-sm text-neutral-300 mb-4`}>
+                                Log in to your panel account to access the GitHub integration.
+                            </p>
+                            <a
+                                href={'/auth/login'}
+                                css={tw`inline-flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white text-sm font-medium rounded transition-colors`}
+                            >
+                                <FontAwesomeIcon icon={faKey} css={tw`mr-2`} />
+                                Log In
+                            </a>
+                        </div>
+                    </ContentBox>
+                )}
+                {!loading && loadError && !authError && (
                     <ContentBox title={'Unable to load'}>
                         <div css={tw`text-center p-4`}>
                             <p css={tw`text-sm text-neutral-400 mb-4`}>

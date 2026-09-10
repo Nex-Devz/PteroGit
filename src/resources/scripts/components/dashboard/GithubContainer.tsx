@@ -34,14 +34,22 @@ export default () => {
     const [connectVisible, setConnectVisible] = useState(false);
     const [deleteAccount, setDeleteAccount] = useState<GithubAccount | null>(null);
     const { clearFlashes, clearAndAddHttpError } = useFlashKey('github');
+    const [authError, setAuthError] = useState(false);
 
     const refresh = () =>
         getGithubAccounts()
             .then((state) => {
                 setModuleState(state);
                 setAccounts(state.accounts);
+                setAuthError(false);
             })
-            .catch((error) => clearAndAddHttpError(error))
+            .catch((error) => {
+                if (error?.response?.status === 401) {
+                    setAuthError(true);
+                } else {
+                    clearAndAddHttpError(error);
+                }
+            })
             .then(() => setLoading(false));
 
     useEffect(() => {
@@ -82,7 +90,11 @@ export default () => {
                 refresh();
             })
             .catch((error) => {
-                clearAndAddHttpError(error);
+                if (error?.response?.status === 401) {
+                    setAuthError(true);
+                } else {
+                    clearAndAddHttpError(error);
+                }
                 setLoading(false);
             });
     };
@@ -98,7 +110,11 @@ export default () => {
         deleteGithubAccount(deleteAccount.id)
             .then(() => refresh())
             .catch((error) => {
-                clearAndAddHttpError(error);
+                if (error?.response?.status === 401) {
+                    setAuthError(true);
+                } else {
+                    clearAndAddHttpError(error);
+                }
                 setLoading(false);
             })
             .then(() => setDeleteAccount(null));
@@ -109,7 +125,24 @@ export default () => {
     return (
         <PageContentBlock title={'GitHub'}>
             <FlashMessageRender byKey={'github'} css={tw`mb-4`} />
-            {disabled && (
+            {authError && !loading && (
+                <ContentBox title={'Login Required'}>
+                    <div css={tw`text-center p-4`}>
+                        <FontAwesomeIcon icon={faGithub} size={'2x'} css={tw`mb-3 text-neutral-400`} />
+                        <p css={tw`text-sm text-neutral-300 mb-4`}>
+                            Log in to your panel account to manage GitHub connections.
+                        </p>
+                        <a
+                            href={'/auth/login'}
+                            css={tw`inline-flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white text-sm font-medium rounded transition-colors`}
+                        >
+                            <FontAwesomeIcon icon={faKey} css={tw`mr-2`} />
+                            Log In
+                        </a>
+                    </div>
+                </ContentBox>
+            )}
+            {!authError && disabled && (
                 <ContentBox title={'Module Disabled'}>
                     <div css={tw`text-center p-4`}>
                         <FontAwesomeIcon icon={faShieldAlt} size={'2x'} css={tw`mb-3 text-neutral-400`} />
@@ -119,7 +152,7 @@ export default () => {
                     </div>
                 </ContentBox>
             )}
-            {!disabled && (
+            {!authError && !disabled && (
                 <ContentBox title={'GitHub Connections'}>
                     <SpinnerOverlay visible={loading} />
 
@@ -168,7 +201,7 @@ export default () => {
                 </ContentBox>
             )}
 
-            {!disabled && (
+            {!authError && !disabled && (
                 <Dialog open={connectVisible} onClose={() => setConnectVisible(false)} title={'Connect GitHub Account'}>
                     <ConnectDialogContent
                         oauthEnabled={!!moduleState?.oauth_enabled}
