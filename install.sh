@@ -344,17 +344,37 @@ ok "Copied $COPIED new file(s) (existing files left untouched)."
 
 # --------------------------------------------------------------- patches
 info "Applying route/config/router patches (idempotent)..."
-"$PHP" "$PATCHER" "$PANEL" || die "Patch step failed - restore from $BK if needed."
+PATCH_OUTPUT=""
+if ! PATCH_OUTPUT="$( "$PHP" "$PATCHER" "$PANEL" 2>&1 )"; then
+    warn "Patcher returned a non-zero exit code - inspect the output below."
+    warn "$PATCH_OUTPUT"
+else
+    info "$PATCH_OUTPUT"
+fi
 
-if ! PATCH_VERIFY="$( "$PHP" "$PATCHER" "$PANEL" )"; then
+# Report results from the patcher output
+PATCH_ERROR_COUNT="$(printf '%s' "$PATCH_OUTPUT" | grep -c '^ERROR' || true)"
+PATCH_PATCHED_COUNT="$(printf '%s' "$PATCH_OUTPUT" | grep -c '^PATCH' || true)"
+PATCH_SKIPPED_COUNT="$(printf '%s' "$PATCH_OUTPUT" | grep -c '^SKIP' || true)"
+
+if [[ "$PATCH_ERROR_COUNT" -gt 0 ]]; then
+    warn "$PATCH_ERROR_COUNT patch(es) could not be applied (panel may have customised files)."
+    warn "The installer will continue - you may need to add those code blocks manually."
+    warn "Check the patcher output above for details."
+else
+    ok "All patches applied successfully ($PATCH_PATCHED_COUNT patched, $PATCH_SKIPPED_COUNT skipped)."
+fi
+
+# Verify idempotency on a second pass
+if ! PATCH_VERIFY="$( "$PHP" "$PATCHER" "$PANEL" 2>&1 )"; then
     warn "Second patcher pass errored - inspect the output."
 else
-    PATCHED_COUNT="$(printf '%s' "$PATCH_VERIFY" | grep -c 'PATCH' || true)"
-    SKIPPED_COUNT="$(printf '%s' "$PATCH_VERIFY" | grep -c 'SKIP' || true)"
-    if [[ "$PATCHED_COUNT" -gt 0 ]]; then
-        warn "Re-run produced $PATCHED_COUNT PATCHED op(s) - expected 0 (idempotency)."
+    VERIFY_PATCHED="$(printf '%s' "$PATCH_VERIFY" | grep -c '^PATCH' || true)"
+    VERIFY_SKIPPED="$(printf '%s' "$PATCH_VERIFY" | grep -c '^SKIP' || true)"
+    if [[ "$VERIFY_PATCHED" -gt 0 ]]; then
+        warn "Re-run produced $VERIFY_PATCHED PATCHED op(s) - expected 0 (idempotency)."
     else
-        ok "Patcher idempotent ($SKIPPED_COUNT op(s) skipped on re-run)."
+        ok "Patcher idempotent ($VERIFY_SKIPPED op(s) skipped on re-run)."
     fi
 fi
 
