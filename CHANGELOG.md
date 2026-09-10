@@ -11,6 +11,28 @@ Releases are created automatically from `v*` tags (see `.github/workflows/releas
 ### Added
 - None yet.
 
+## [1.2.0] – 2026-09-10
+
+### Added
+- GitHub/Git pages now show a **Login Required** card with a styled login button when the
+  user is not authenticated (HTTP 401), instead of a raw error flash message.
+
+### Changed
+- Patcher anchors use multi-anchor fallback strategies: each operation tries specific anchors
+  first, then generic structural anchors, then file-boundary fallbacks — panels with reordered
+  blocks, extra permission groups, or custom route files no longer fail.
+- Patcher always exits 0 even on partial failures; the installer warns about skipped
+  operations instead of aborting the remaining steps.
+- Installer captures patcher output and reports PATCHED / SKIPPED / ERROR counts in the log.
+- Config-append handles both `];` and `]);` endings with last-occurrence fallback.
+- `find_group_end()` and `find_after_last()` helpers improve robustness for deeply nested
+  or reordered permission/route blocks.
+
+### Fixed
+- Panels with heavily customised routes, models, or frontend components no longer throw
+  spurious "anchor not found" errors during installation.
+- Disabled-module state is shown cleanly instead of surfacing HTTP errors.
+
 ## [1.1.2] – 2026-09-09
 
 ### Changed
