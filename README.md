@@ -18,6 +18,7 @@ The installer only adds new files and applies targeted patches. Every modified f
 - **`.gitignore` editor** – Read and write `.gitignore` per repository.
 - **Git identity** – Per-server commit name and email configuration.
 - **Admin settings page** – Enable/disable the feature and configure GitHub OAuth from the panel.
+- **Admin audit log** – Review every Git operation across all servers (server, user, result and error details).
 - **Security** – All git commands execute as a dedicated system user (`pterodactyl`) through a scoped sudoers rule; never as `root` or the web user.
 
 ---
@@ -47,7 +48,7 @@ bash <(curl -sSL https://raw.githubusercontent.com/Nex-Devz/PteroGit/main/instal
 Pin a specific release instead of `main`:
 
 ```bash
-PTEROGIT_VERSION=v1.1.0 bash <(curl -sSL https://raw.githubusercontent.com/Nex-Devz/PteroGit/main/install.sh)
+PTEROGIT_VERSION=v1.3.0 bash <(curl -sSL https://raw.githubusercontent.com/Nex-Devz/PteroGit/main/install.sh)
 ```
 
 Update an existing install or repair a panel: re-run the same command — everything is idempotent.

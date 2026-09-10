@@ -14,7 +14,7 @@ BASE="https://raw.githubusercontent.com/pterodactyl/panel/$TAG"
 [[ -d "$FIXTURE" ]] || { echo "fixture directory missing: $FIXTURE" >&2; exit 1; } 
 
 rm -rf "${FIXTURE:?}"/*
-mkdir -p "$FIXTURE"/{app/Http/ViewComposers,app/Models,config,resources/scripts/routers,resources/scripts/state,resources/views/partials/admin/settings,routes}
+mkdir -p "$FIXTURE"/{app/Http/ViewComposers,app/Models,app/Providers,config,resources/scripts/routers,resources/scripts/state,resources/views/partials/admin/settings,routes}
 
 FILES=(
     routes/api-client.php
@@ -24,6 +24,7 @@ FILES=(
     app/Models/Permission.php
     app/Models/User.php
     app/Http/ViewComposers/AssetComposer.php
+    app/Providers/SettingsServiceProvider.php
     resources/scripts/state/settings.ts
     resources/scripts/routers/routes.ts
     resources/scripts/routers/ServerRouter.tsx

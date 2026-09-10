@@ -26,6 +26,9 @@ use Pterodactyl\Http\Requests\Api\Client\Servers\Github\RevertRequest;
 use Pterodactyl\Http\Requests\Api\Client\Servers\Github\DiffRequest;
 use Pterodactyl\Http\Requests\Api\Client\Servers\Github\SaveGitignoreRequest;
 use Pterodactyl\Http\Requests\Api\Client\Servers\Github\SaveIdentityRequest;
+use Pterodactyl\Http\Requests\Api\Client\Servers\Github\CommitDetailRequest;
+use Pterodactyl\Http\Requests\Api\Client\Servers\Github\StashRequest;
+use Pterodactyl\Http\Requests\Api\Client\Servers\Github\StashDropRequest;
 use Pterodactyl\Exceptions\Http\Connection\DaemonConnectionException;
 use RuntimeException;
 
@@ -364,6 +367,55 @@ class GithubController extends ClientApiController
         $this->authorizeLinked($request, $server);
 
         return new JsonResponse(['remote' => $this->repositories->remote($server)]);
+    }
+
+    public function commitDetail(CommitDetailRequest $request, Server $server): JsonResponse
+    {
+        $this->authorizeLinked($request, $server);
+
+        return new JsonResponse([
+            'commit' => $this->repositories->commitDetail($server, (string) $request->input('sha')),
+        ]);
+    }
+
+    public function stashList(ViewGithubRequest $request, Server $server): JsonResponse
+    {
+        $this->authorizeLinked($request, $server);
+
+        return new JsonResponse(['stashes' => $this->repositories->stashList($server)]);
+    }
+
+    public function stashPush(StashRequest $request, Server $server): JsonResponse
+    {
+        $this->assertModuleEnabled();
+        $this->authorizeLinked($request, $server);
+
+        return $this->guarded($server, function () use ($request, $server) {
+            return new JsonResponse($this->repositories->stashPush(
+                $server,
+                $request->input('message'),
+            ));
+        });
+    }
+
+    public function stashPop(ViewGithubRequest $request, Server $server): JsonResponse
+    {
+        $this->assertModuleEnabled();
+        $this->authorizeLinked($request, $server);
+
+        return $this->guarded($server, function () use ($server) {
+            return new JsonResponse($this->repositories->stashPop($server));
+        });
+    }
+
+    public function stashDrop(StashDropRequest $request, Server $server): JsonResponse
+    {
+        $this->assertModuleEnabled();
+        $this->authorizeLinked($request, $server);
+
+        return $this->guarded($server, function () use ($request, $server) {
+            return new JsonResponse($this->repositories->stashDrop($server, (int) $request->input('index')));
+        });
     }
 
     /**

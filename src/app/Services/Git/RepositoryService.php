@@ -727,6 +727,165 @@ class RepositoryService
         }
     }
 
+    /**
+     * Returns full details for a single commit: metadata, file list, and unified diff.
+     */
+    public function commitDetail(Server $server, string $sha): array
+    {
+        $this->assertRepository($server);
+        $this->assertValidReference($sha);
+
+        // Full hash
+        $fullSha = trim($this->git->run($server, ['rev-parse', $sha]));
+
+        // Commit metadata
+        $format = '%H|%h|%an|%ae|%s|%ar|%ai';
+        $log = $this->git->run($server, ['log', '-1', "--pretty=format:{$format}", $fullSha]);
+        [$hash, $short, $author, $email, $subject, $relative, $date] = array_pad(explode('|', $log, 7), 7, '');
+
+        // Changed files with status
+        $statRaw = $this->git->run($server, ['diff-tree', '--no-commit-id', '-r', '--name-status', $fullSha]);
+        $files = [];
+        foreach (array_filter(explode("\n", $statRaw)) as $line) {
+            $parts = preg_split('/\s+/', $line, 2);
+            if (count($parts) === 2) {
+                $files[] = ['status' => $parts[0], 'file' => $parts[1]];
+            } elseif (count($parts) === 1 && $parts[0] !== '') {
+                // merge commit — diff-tree -r without -m shows nothing for merges
+                $files[] = ['status' => 'M', 'file' => $parts[0]];
+            }
+        }
+
+        // If merge commit, use -m flag to show combined diff
+        if (count($files) === 0) {
+            $parents = trim($this->git->run($server, ['rev-list', '--parents', '-n', '1', $fullSha]));
+            $parentCount = count(explode(' ', $parents));
+            if ($parentCount > 1) {
+                $statRaw = $this->git->run($server, ['diff-tree', '--no-commit-id', '-r', '-m', '--name-status', $fullSha]);
+                foreach (array_filter(explode("\n", $statRaw)) as $line) {
+                    $parts = preg_split('/\s+/', $line, 2);
+                    if (count($parts) === 2) {
+                        $files[] = ['status' => $parts[0], 'file' => $parts[1]];
+                    }
+                }
+            }
+        }
+
+        // Unified diff (suppress binary file diffs)
+        $diff = '';
+        try {
+            $diff = $this->git->run($server, ['diff', $fullSha . '^', $fullSha], true, false);
+        } catch (RuntimeException $e) {
+            // Root commit has no parent
+            $diff = $this->git->run($server, ['diff', '--no-index', '/dev/null', $fullSha], false, false);
+        }
+
+        return [
+            'hash' => $fullSha,
+            'short' => $short,
+            'author' => $author,
+            'email' => $email,
+            'subject' => $subject,
+            'relative' => $relative,
+            'date' => $date,
+            'files' => $files,
+            'diff' => $diff,
+        ];
+    }
+
+    /**
+     * Returns the list of git stash entries.
+     */
+    public function stashList(Server $server): array
+    {
+        $this->assertRepository($server);
+
+        try {
+            $output = $this->git->run($server, ['stash', 'list', '--pretty=format:%gd|%gs|%gD|%ar']);
+        } catch (RuntimeException $e) {
+            return [];
+        }
+
+        $stashes = [];
+        foreach (array_filter(explode("\n", $output)) as $i => $line) {
+            [$ref, $subject, $branch, $relative] = array_pad(explode('|', $line, 4), 4, '');
+            $stashes[] = [
+                'index' => $i,
+                'ref' => $ref,
+                'subject' => $subject,
+                'branch' => $branch,
+                'relative' => $relative,
+            ];
+        }
+
+        return $stashes;
+    }
+
+    /**
+     * Stashes the current working directory changes.
+     */
+    public function stashPush(Server $server, ?string $message = null): array
+    {
+        $this->begin($server, 'stash', null, $this->currentBranchish($server));
+
+        try {
+            $this->assertRepository($server);
+            $args = ['stash', 'push'];
+            if ($message !== null && trim($message) !== '') {
+                $args[] = '-m';
+                $args[] = $message;
+            }
+            $this->git->run($server, $args);
+        } catch (RuntimeException $exception) {
+            $this->fail($exception->getMessage());
+            throw $exception;
+        }
+
+        $this->succeed();
+
+        return ['stashes' => $this->stashList($server), 'status' => $this->status($server)];
+    }
+
+    /**
+     * Pops the most recent stash entry.
+     */
+    public function stashPop(Server $server): array
+    {
+        $this->begin($server, 'stash-pop', null, $this->currentBranchish($server));
+
+        try {
+            $this->assertRepository($server);
+            $this->git->run($server, ['stash', 'pop']);
+        } catch (RuntimeException $exception) {
+            $this->fail($exception->getMessage());
+            throw $exception;
+        }
+
+        $this->succeed();
+
+        return ['stashes' => $this->stashList($server), 'status' => $this->status($server)];
+    }
+
+    /**
+     * Drops a stash entry by index.
+     */
+    public function stashDrop(Server $server, int $index): array
+    {
+        $this->begin($server, 'stash-drop', null, $this->currentBranchish($server));
+
+        try {
+            $this->assertRepository($server);
+            $this->git->run($server, ['stash', 'drop', "stash@{{$index}}"]);
+        } catch (RuntimeException $exception) {
+            $this->fail($exception->getMessage());
+            throw $exception;
+        }
+
+        $this->succeed();
+
+        return ['stashes' => $this->stashList($server)];
+    }
+
     private function assertValidReference(string $reference): void
     {
         if ($reference === '' || $reference !== trim($reference)) {

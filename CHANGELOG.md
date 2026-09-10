@@ -11,6 +11,38 @@ Releases are created automatically from `v*` tags (see `.github/workflows/releas
 ### Added
 - None yet.
 
+## [1.3.0] – 2026-09-10
+
+### Added
+- Admin **Git operation audit log** page (Admin → Settings → GitHub → Audit Log): paginated
+  history of every Git operation across all servers with server, user, operation, result and
+  error details.
+- Server API endpoints for **commit detail** (`GET /github/commit`) and **git stash**
+  (list / push / pop / drop). Backend is fully implemented and permission-guarded
+  (`git.read` / `git.manage-repository`); the server-side UI for these lands in a follow-up
+  release.
+
+### Fixed
+- Fresh installs no longer return **HTTP 500 on every server Git route**: the patcher now
+  registers the 9 `Permission::ACTION_GIT_*` constants that the request classes resolve during
+  authorization. v1.2.0 added the `git.*` permission group but omitted the constants.
+- OAuth settings saved from the admin page now actually take effect: the `pterodactyl:git:*`
+  keys are registered in `SettingsServiceProvider::$keys`, so DB values merge into
+  `config('pterodactyl.git.*')` on boot, and the `client_secret` is stored encrypted and
+  decrypted transparently when loaded (previously admin-saved values were silently ignored by
+  the OAuth service).
+- Patcher is now line-ending agnostic (LF ⇄ CRLF): patches authored on Windows apply cleanly
+  to Linux panels and the idempotency markers match regardless of the working file's EOL. The
+  encrypted-keys operation previously re-patched on every run.
+
+### Changed
+- Admin GitHub settings page rewritten with a full setup guide (personal access token, OAuth2
+  app, `git.*` permission matrix, environment variables and troubleshooting), plus guidance for
+  reaching `/account/github` on themed panels that replace the stock account navigation.
+- Stock test fixtures now include `app/Providers/SettingsServiceProvider.php`; the CI
+  patcher-idempotency and tolerant-whitespace checks cover the new provider and permission
+  operations.
+
 ## [1.2.0] – 2026-09-10
 
 ### Added

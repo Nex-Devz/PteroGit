@@ -89,13 +89,14 @@ Patched file inventory:
 
 | Panel file | What the patcher adds |
 |---|---|
-| `routes/api-client.php` | Account-level github group (after the ssh-keys group) and server-level github group (before the `/users` group) |
-| `routes/admin.php` | `GET /settings/github` + `PATCH /settings/github` route entries |
+| `routes/api-client.php` | Account-level github group (after the ssh-keys group) and server-level github group (before the `/users` group). The server group includes `/commit` (commit detail), `/stash`, `/stash/pop` and `/stash/drop` |
+| `routes/admin.php` | `GET /settings/github` + `PATCH /settings/github` + `GET /settings/github/audit-log` (named `admin.settings.github` / `admin.github.audit-log`) |
 | `routes/base.php` | `GET /account/github/oauth/begin` + `/callback` (named `github.oauth.begin`/`github.oauth.callback`) |
 | `config/pterodactyl.php` | `git` config block (data_directory, enabled, oauth) |
 | `app/Http/ViewComposers/AssetComposer.php` | `git.enabled` inside `siteConfiguration` |
 | `app/Models/User.php` | `githubAccounts(): HasMany` relation after `sshKeys()` |
-| `app/Models/Permission.php` | `git` sub-user permission group (9 actions) after the `activity` group |
+| `app/Models/Permission.php` | `git` sub-user permission group (9 actions) after the `activity` group **and** the 9 `ACTION_GIT_*` constants (after `ACTION_ACTIVITY_READ`) so request classes like `ViewGithubRequest` resolve during authorization |
+| `app/Providers/SettingsServiceProvider.php` | The 5 `pterodactyl:git:*` keys registered in `$keys` (so admin-saved DB settings merge into `config('pterodactyl.git.*')`) and `pterodactyl:git:oauth:client_secret` in `$encrypted` (stored encrypted, decrypted on load) |
 | `resources/scripts/state/settings.ts` | `git: { enabled: boolean }` inside the `SiteSettings` interface |
 | `resources/scripts/routers/routes.ts` | 2 imports, account `/github` route, server `/git` route (`feature: 'git'`, `permission: 'git.*'`) |
 | `resources/scripts/routers/ServerRouter.tsx` | `gitEnabled` line + two feature filters (nav + switch) |

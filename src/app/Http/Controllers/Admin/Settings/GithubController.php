@@ -12,6 +12,7 @@ use Illuminate\Contracts\Encryption\Encrypter;
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Pterodactyl\Contracts\Repository\SettingsRepositoryInterface;
 use Pterodactyl\Http\Requests\Admin\Settings\GithubSettingsFormRequest;
+use Pterodactyl\Models\GitOperation;
 
 class GithubController extends Controller
 {
@@ -58,5 +59,21 @@ class GithubController extends Controller
         $this->alert->success('GitHub integration settings have been updated successfully and the queue worker was restarted to apply these changes.')->flash();
 
         return redirect()->route('admin.settings.github');
+    }
+
+    /**
+     * Renders the Git operation audit log for all servers.
+     */
+    public function auditLog(): View
+    {
+        $operations = GitOperation::query()
+            ->with('server')
+            ->with('user')
+            ->latest('id')
+            ->paginate(50);
+
+        return view('admin.settings.github-audit-log', [
+            'operations' => $operations,
+        ]);
     }
 }

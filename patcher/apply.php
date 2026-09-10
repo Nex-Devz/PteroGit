@@ -152,6 +152,14 @@ function patch_multi(string $relPath, string $defaultMode, array $anchors, strin
 
     $content = (string) file_get_contents($file);
 
+    // Normalise line endings to LF for matching/check/dedup so that patches
+    // authored on Windows (CRLF) behave identically on Linux panels (LF) and
+    // never miss the idempotency check. The file keeps its original dominant
+    // EOL on write.
+    $originalEol = str_contains($content, "\r\n") ? "\r\n" : "\n";
+    $content = str_replace("\r\n", "\n", $content);
+    $check = str_replace("\r\n", "\n", $check);
+
     // Already applied?
     if (str_contains($content, $check)) {
         $result['status'] = 'skipped';
@@ -224,6 +232,12 @@ function patch_multi(string $relPath, string $defaultMode, array $anchors, strin
             $newContent = $head . str_replace($insert, '', $tail);
         }
 
+        // Always work in LF; re-apply the file's original dominant EOL.
+        $newContent = str_replace("\r\n", "\n", $newContent);
+        if ($originalEol === "\r\n") {
+            $newContent = str_replace("\n", "\r\n", $newContent);
+        }
+
         if (file_put_contents($file, $newContent) === false) {
             $result['status'] = 'error';
             $result['detail'] = 'write failed';
@@ -287,6 +301,12 @@ $serverGithubRoutes = <<<'PHP'
         Route::post('/identity', [Client\Servers\GithubController::class, 'saveIdentity']);
 
         Route::get('/remote', [Client\Servers\GithubController::class, 'remote']);
+
+        Route::get('/commit', [Client\Servers\GithubController::class, 'commitDetail']);
+        Route::get('/stash', [Client\Servers\GithubController::class, 'stashList']);
+        Route::post('/stash', [Client\Servers\GithubController::class, 'stashPush']);
+        Route::post('/stash/pop', [Client\Servers\GithubController::class, 'stashPop']);
+        Route::post('/stash/drop', [Client\Servers\GithubController::class, 'stashDrop']);
     });
 
 PHP;
@@ -446,6 +466,19 @@ PHP,
             ],
         ],
         'check' => "Route::patch('/github'",
+    ],
+
+    // ---- admin audit log GET route ----
+    [
+        'file' => 'routes/admin.php',
+        'mode' => 'after',
+        'anchors' => [
+            [
+                'needle' => "Route::patch('/github'",
+                'insert' => "\n    Route::get('/github/audit-log', [Admin\\Settings\\GithubController::class, 'auditLog'])->name('admin.github.audit-log');",
+            ],
+        ],
+        'check' => "name('admin.github.audit-log')",
     ],
 
     // ---- base routes: OAuth callbacks (before catch-all React route) ----
@@ -1016,6 +1049,50 @@ PHP,
         'check' => "'git' => [",
     ],
 
+    // Add the ACTION_GIT_* permission constants referenced by the server Git
+    // request classes during authorization (ViewGithubRequest, PullRequest, ...).
+    // Without these, every server git route throws "Undefined constant
+    // Pterodactyl\Models\Permission::ACTION_GIT_*".
+    [
+        'file' => 'app/Models/Permission.php',
+        'mode' => 'after',
+        'anchors' => [
+            // Primary: after the activity read constant
+            [
+                'needle' => "public const ACTION_ACTIVITY_READ = 'activity.read';",
+                'insert' => <<<'PHP'
+
+    public const ACTION_GIT_READ = 'git.read';
+    public const ACTION_GIT_PULL = 'git.pull';
+    public const ACTION_GIT_PUSH = 'git.push';
+    public const ACTION_GIT_COMMIT = 'git.commit';
+    public const ACTION_GIT_MANAGE_BRANCHES = 'git.manage-branches';
+    public const ACTION_GIT_MANAGE_REPOSITORY = 'git.manage-repository';
+    public const ACTION_GIT_MANAGE_GITIGNORE = 'git.manage-gitignore';
+    public const ACTION_GIT_REVERT = 'git.revert';
+    public const ACTION_GIT_FORCE_RESET = 'git.force-reset';
+PHP,
+            ],
+            // Fallback: the activity read constant name
+            [
+                'needle' => "ACTION_ACTIVITY_READ",
+                'insert' => <<<'PHP'
+
+    public const ACTION_GIT_READ = 'git.read';
+    public const ACTION_GIT_PULL = 'git.pull';
+    public const ACTION_GIT_PUSH = 'git.push';
+    public const ACTION_GIT_COMMIT = 'git.commit';
+    public const ACTION_GIT_MANAGE_BRANCHES = 'git.manage-branches';
+    public const ACTION_GIT_MANAGE_REPOSITORY = 'git.manage-repository';
+    public const ACTION_GIT_MANAGE_GITIGNORE = 'git.manage-gitignore';
+    public const ACTION_GIT_REVERT = 'git.revert';
+    public const ACTION_GIT_FORCE_RESET = 'git.force-reset';
+PHP,
+            ],
+        ],
+        'check' => "ACTION_GIT_READ",
+    ],
+
     // ================================================= admin nav partial
     [
         'file' => 'resources/views/partials/admin/settings/nav.blade.php',
@@ -1046,6 +1123,70 @@ PHP,
             ],
         ],
         'check' => "route('admin.settings.github')",
+    ],
+
+    // ================================================= SettingsServiceProvider
+    // Register the git settings keys so admin-saved values merge into
+    // config('pterodactyl.git.*') on boot (mirrors how SMTP settings work).
+    [
+        'file' => 'app/Providers/SettingsServiceProvider.php',
+        'mode' => 'after',
+        'anchors' => [
+            // Primary: after the allocations range_end key
+            [
+                'needle' => "'pterodactyl:client_features:allocations:range_end',",
+                'insert' => "\n        'pterodactyl:git:enabled',\n        'pterodactyl:git:oauth:enabled',\n        'pterodactyl:git:oauth:client_id',\n        'pterodactyl:git:oauth:client_secret',\n        'pterodactyl:git:oauth:redirect_uri',",
+            ],
+            // Fallback: allocations range_start
+            [
+                'needle' => "'pterodactyl:client_features:allocations:range_start',",
+                'insert' => "\n        'pterodactyl:git:enabled',\n        'pterodactyl:git:oauth:enabled',\n        'pterodactyl:git:oauth:client_id',\n        'pterodactyl:git:oauth:client_secret',\n        'pterodactyl:git:oauth:redirect_uri',",
+            ],
+            // Fallback: the auth 2fa key
+            [
+                'needle' => "'pterodactyl:auth:2fa_required',",
+                'insert' => "\n        'pterodactyl:git:enabled',\n        'pterodactyl:git:oauth:enabled',\n        'pterodactyl:git:oauth:client_id',\n        'pterodactyl:git:oauth:client_secret',\n        'pterodactyl:git:oauth:redirect_uri',",
+            ],
+            // Fallback: the $keys array opening
+            [
+                'needle' => "protected array \$keys = [",
+                'insert' => "\n        'pterodactyl:git:enabled',\n        'pterodactyl:git:oauth:enabled',\n        'pterodactyl:git:oauth:client_id',\n        'pterodactyl:git:oauth:client_secret',\n        'pterodactyl:git:oauth:redirect_uri',",
+            ],
+        ],
+        'check' => "'pterodactyl:git:enabled'",
+    ],
+
+    // Register the OAuth client secret as an encrypted key so it is stored
+    // encrypted in the database and decrypted transparently when loaded.
+    // NOTE: a simple "after" insert here would collide with op 1 above, whose
+    // combined insert block already contains the client_secret line; the shared
+    // duplicate-cleaner would then delete op 2's own insertion. Using a full
+    // block replace keeps the inserted text unique.
+    [
+        'file' => 'app/Providers/SettingsServiceProvider.php',
+        'mode' => 'replace',
+        'anchors' => [
+            // Primary: the full encrypted keys array (stock layout)
+            [
+                'needle' => <<<'PHP'
+    protected static array $encrypted = [
+        'mail:mailers:smtp:password',
+    ];
+PHP,
+                'insert' => <<<'PHP'
+    protected static array $encrypted = [
+        'mail:mailers:smtp:password',
+        'pterodactyl:git:oauth:client_secret',
+    ];
+PHP,
+            ],
+            // Fallback: the encrypted array opening line
+            [
+                'needle' => "static array \$encrypted = [",
+                'insert' => "\n        'pterodactyl:git:oauth:client_secret',",
+            ],
+        ],
+        'check' => "'mail:mailers:smtp:password',\n        'pterodactyl:git:oauth:client_secret',",
     ],
 ];
 
