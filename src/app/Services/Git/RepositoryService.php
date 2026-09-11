@@ -48,20 +48,20 @@ class RepositoryService
      * the shared container checkout is used. Any other user gets their own
      * personal worktree, created on first use.
      */
-    private function effectiveDirectory(Server $server): string
+    private function effectiveCwd(Server $server): string
     {
         $user = $this->actingUserId;
         if ($user === null) {
-            return $this->git->containerDirectory($server);
+            return $this->git->repositoryCwd($server);
         }
 
         $repository = $this->linked($server);
         if (!$repository) {
-            return $this->git->containerDirectory($server);
+            return $this->git->repositoryCwd($server);
         }
 
         if ($server->owner_id === $user || $repository->githubAccount?->user_id === $user) {
-            return $this->git->containerDirectory($server);
+            return $this->git->repositoryCwd($server);
         }
 
         return $this->ensureWorktree($server, $user);
@@ -84,10 +84,10 @@ class RepositoryService
      */
     private function ensureWorktree(Server $server, int $userId): string
     {
-        $path = $this->git->worktreeDirectory($server, $userId);
+        $cwd = $this->git->worktreeCwd($server, $userId);
 
-        if (is_dir($path . '/.git')) {
-            return $path;
+        if ($this->git->isRepositoryAt($server, $cwd)) {
+            return $cwd;
         }
 
         $lock = Cache::lock('git:worktree:' . $server->id . ':' . $userId, 120);
@@ -96,8 +96,8 @@ class RepositoryService
                 throw new RuntimeException('Another request is already creating your workspace. Please retry.');
             }
 
-            if (is_dir($path . '/.git')) {
-                return $path;
+            if ($this->git->isRepositoryAt($server, $cwd)) {
+                return $cwd;
             }
 
             $row = GitWorktree::firstOrNew(['server_id' => $server->id, 'user_id' => $userId]);
@@ -108,7 +108,7 @@ class RepositoryService
 
             $this->git->ensureWorktree($server, $userId, $row->branch);
 
-            return $path;
+            return $cwd;
         } finally {
             $lock->release();
         }
@@ -137,7 +137,7 @@ class RepositoryService
      */
     private function run(Server $server, array $args, bool $captureError = true, bool $trimOutput = true): string
     {
-        return $this->git->runIn($this->effectiveDirectory($server), $args, $captureError, $trimOutput);
+        return $this->git->runAt($server, $this->effectiveCwd($server), $args, $captureError, $trimOutput);
     }
 
     /**
@@ -145,7 +145,7 @@ class RepositoryService
      */
     private function runWithTokenUrl(Server $server, array $args, string $remoteUrl, string $token): string
     {
-        return $this->git->runWithTokenUrlIn($this->effectiveDirectory($server), $args, $remoteUrl, $token);
+        return $this->git->runWithTokenUrlAt($server, $this->effectiveCwd($server), $args, $remoteUrl, $token);
     }
 
     /**
@@ -153,15 +153,15 @@ class RepositoryService
      */
     private function isRepo(Server $server): bool
     {
-        return $this->git->isRepositoryAt($this->effectiveDirectory($server));
+        return $this->git->isRepositoryAt($server, $this->effectiveCwd($server));
     }
 
     /**
-     * Resolves a path within the actor's effective directory.
+     * Sanitizes a user-supplied path into a safe relative pathspec.
      */
     private function resolvePath(Server $server, string $path): string
     {
-        return $this->git->resolvePathIn($this->effectiveDirectory($server), $path);
+        return $this->git->sanitizeRelPath($path);
     }
 
     /**
@@ -721,10 +721,7 @@ class RepositoryService
 
     public function getGitignore(Server $server): string
     {
-        $this->assertRepository($server);
-        $path = $this->effectiveDirectory($server) . '/.gitignore';
-
-        return file_exists($path) ? (string) file_get_contents($path) : '';
+        return $this->git->readFile($server, $this->effectiveCwd($server), '.gitignore') ?? '';
     }
 
     public function saveGitignore(Server $server, string $content): void
@@ -733,9 +730,7 @@ class RepositoryService
 
         try {
             $this->assertRepository($server);
-            $path = $this->effectiveDirectory($server) . '/.gitignore';
-            $this->git->runAsContainerUserWithInput(['/usr/bin/tee', $path], $content);
-            $this->git->runAsContainerUser(['/usr/bin/chown', 'pterodactyl:pterodactyl', $path]);
+            $this->git->writeFile($server, $this->effectiveCwd($server), '.gitignore', $content);
         } catch (RuntimeException $exception) {
             $this->fail($exception->getMessage());
             throw $exception;

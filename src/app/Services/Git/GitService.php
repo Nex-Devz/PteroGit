@@ -3,15 +3,21 @@
 namespace Pterodactyl\Services\Git;
 
 use Pterodactyl\Models\Server;
+use Pterodactyl\Services\Git\Transports\GitTransportManager;
 use RuntimeException;
-use Symfony\Component\Process\Process;
 
 /**
- * Runs Git commands against a Pterodactyl server's container volume.
+ * Runs Git commands against a Pterodactyl server's volume.
  *
- * Commands execute as the container user (pterodactyl) via a tightly scoped
- * sudoers rule and are always spawned with argument arrays — never through a
- * shell string — so untrusted user input can never be interpreted by the shell.
+ * Execution is transport-agnostic: a git operation is addressed by a cwd
+ * RELATIVE to the node's volume root + the git argument array, and the active
+ * transport (local sudo execution, or the Wings git channel on the server's
+ * node) resolves it against the filesystem that actually owns the data. The
+ * panel never needs the node's physical volume path, so a stale daemonBase
+ * can never cause "server directory does not exist" again.
+ *
+ * Commands are always spawned with argument arrays — never through a shell
+ * string — so untrusted user input can never be interpreted by the shell.
  */
 class GitService
 {
@@ -19,107 +25,132 @@ class GitService
 
     public const WORKING_DIRECTORY = '/home/container';
 
-    private string $baseDirectory;
-
-    public function __construct()
+    public function __construct(private readonly GitTransportManager $transports)
     {
-        $this->baseDirectory = rtrim(config('pterodactyl.git.data_directory', '/var/lib/pterodactyl'), '/');
     }
 
     /**
-     * The absolute host path for a server's container working directory.
+     * The volume-root-relative directory of a server's container volume.
      */
-    public function containerDirectory(Server $server): string
+    public function repositoryCwd(Server $server): string
     {
-        $base = rtrim($server->node?->daemonBase ?? $this->baseDirectory, '/');
-
-        return $base . '/' . $server->uuid;
+        return GitPaths::normalize($server->uuid);
     }
 
     /**
-     * The host path under which per-subuser git worktrees live.
-     *
-     * Worktrees are kept outside the container volume (a sibling of the server
-     * folder) so they are never picked up by the runtime and never appear in
-     * the panel file manager.
+     * The volume-root-relative directory under which per-subuser worktrees live.
      */
-    public function worktreesRoot(Server $server): string
+    public function worktreesRootRel(Server $server): string
     {
-        return dirname($this->containerDirectory($server)) . '/.git-worktrees';
+        return '.git-worktrees';
     }
 
     /**
-     * The host path for a single sub-user's git worktree.
+     * The volume-root-relative directory of a single sub-user's git worktree.
      */
-    public function worktreeDirectory(Server $server, int $userId): string
+    public function worktreeCwd(Server $server, int $userId): string
     {
-        return $this->worktreesRoot($server) . '/' . $server->uuid . '/' . $userId;
+        return '.git-worktrees/' . $this->repositoryCwd($server) . '/' . $userId;
     }
 
     /**
-     * Validates that a user-supplied path stays within a given directory root.
-     *
-     * @throws RuntimeException
+     * The path argument to hand `git worktree add` for a sub-user's worktree,
+     * relative to the MAIN repository cwd (= ../ from the server volume dir).
      */
-    public function resolvePathIn(string $root, string $path): string
+    public function worktreeArg(Server $server, int $userId): string
     {
-        $normalized = str_replace('\\', '/', $path);
-        if ($normalized === '') {
-            $normalized = '/';
-        }
-
-        $absolute = $normalized[0] === '/' ? $normalized : '/' . $normalized;
-        $resolved = realpath($root . $absolute) ?: $root . $absolute;
-
-        if ($resolved !== $root && !str_starts_with($resolved, $root . '/')) {
-            throw new RuntimeException('The requested path is outside the server directory.');
-        }
-
-        return $resolved;
+        return '../.git-worktrees/' . $this->repositoryCwd($server) . '/' . $userId;
     }
 
     /**
-     * Validates that a user-supplied path stays within the server's container directory.
+     * Tracks which transport a server currently routes through.
+     */
+    public function transportFor(Server $server): string
+    {
+        return $this->transports->for($server)->id();
+    }
+
+    /**
+     * Validates that a user-supplied path is a safe RELATIVE path (no absolute
+     * segments, no traversal). Git then resolves it against its working dir.
      *
      * @throws RuntimeException
      */
-    public function resolvePath(Server $server, string $path): string
+    public function sanitizeRelPath(string $path): string
     {
-        return $this->resolvePathIn($this->containerDirectory($server), $path);
+        return GitPaths::normalize($path);
     }
 
     /**
-     * Returns true if the given directory currently contains a git repository.
+     * Returns true when the directory (volume-root relative) contains a git repository.
      */
-    public function isRepositoryAt(string $dir): bool
+    public function isRepositoryAt(Server $server, string $cwdRel): bool
     {
-        return is_dir($dir) && is_dir($dir . '/.git');
+        $rel = GitPaths::normalize($cwdRel);
+
+        return $rel === ''
+            ? false
+            : $this->transports->for($server)->fileExists($server, $rel, '.git');
     }
 
     /**
-     * Returns true if the server directory currently contains a git repository.
+     * Returns true when the directory (volume-root relative) exists on the node.
      */
-    public function isRepository(Server $server): bool
+    public function dirExists(Server $server, string $cwdRel): bool
     {
-        return $this->isRepositoryAt($this->containerDirectory($server));
+        return $this->transports->for($server)->dirExists($server, GitPaths::normalize($cwdRel));
+    }
+
+    /**
+     * Reads a single file inside a cwd (volume-root relative); null when absent.
+     */
+    public function readFile(Server $server, string $cwdRel, string $basename): ?string
+    {
+        return $this->transports->for($server)->readFile($server, GitPaths::normalize($cwdRel), GitPaths::normalize($basename));
+    }
+
+    /**
+     * Writes a single file inside a cwd (volume-root relative) as the container user.
+     */
+    public function writeFile(Server $server, string $cwdRel, string $basename, string $content): void
+    {
+        $this->transports->for($server)->writeFile($server, GitPaths::normalize($cwdRel), GitPaths::normalize($basename), $content);
+    }
+
+    /**
+     * Recursively creates a directory (volume-root relative) owned by the container user.
+     */
+    public function mkdir(Server $server, string $cwdRel): void
+    {
+        $this->transports->for($server)->mkdir($server, GitPaths::normalize($cwdRel));
+    }
+
+    /**
+     * Re-owns a single file inside a cwd (volume-root relative) to the container user.
+     */
+    public function chownFile(Server $server, string $cwdRel, string $basename): void
+    {
+        $this->transports->for($server)->chownFile($server, GitPaths::normalize($cwdRel), GitPaths::normalize($basename));
     }
 
     public function repositoryError(Server $server): ?string
     {
-        if (!is_dir($this->containerDirectory($server))) {
+        if (!$this->dirExists($server, $this->repositoryCwd($server))) {
             return 'The server directory does not exist yet.';
         }
 
-        return $this->isRepository($server) ? null : 'The server directory is not a git repository.';
+        return $this->isRepositoryAt($server, $this->repositoryCwd($server))
+            ? null
+            : 'The server directory is not a git repository.';
     }
 
     /**
-     * Returns true when the given branch exists in the repository.
+     * Returns true when the given branch exists in the main repository.
      */
     public function branchExists(Server $server, string $branch): bool
     {
         try {
-            $this->run($server, ['rev-parse', '--verify', '--quiet', 'refs/heads/' . $branch]);
+            $this->runAt($server, $this->repositoryCwd($server), ['rev-parse', '--verify', '--quiet', 'refs/heads/' . $branch]);
 
             return true;
         } catch (RuntimeException $e) {
@@ -133,7 +164,7 @@ class GitService
     public function pruneWorktrees(Server $server): void
     {
         try {
-            $this->run($server, ['worktree', 'prune']);
+            $this->runAt($server, $this->repositoryCwd($server), ['worktree', 'prune']);
         } catch (RuntimeException $e) {
             // nothing to prune
         }
@@ -142,242 +173,137 @@ class GitService
     /**
      * Creates (or re-registers) a sub-user's worktree on its own branch.
      *
-     * The worktree is created as the container user and lives outside the
-     * container volume. If the branch already exists (e.g. the worktree was
-     * cleaned up after a push) it is simply checked out again.
+     * The worktree lives at volume-root/.git-worktrees/<uuid>/<userId> and is
+     * created as the container user. If the branch already exists (e.g. the
+     * worktree was cleaned up after a push) it is simply checked out again.
      *
      * @throws RuntimeException
      */
     public function createWorktree(Server $server, int $userId, string $branch): void
     {
-        $path = $this->worktreeDirectory($server, $userId);
+        $cwd = $this->worktreeCwd($server, $userId);
+        $path = $this->worktreeArg($server, $userId);
 
-        // Ensure the worktree root exists and is owned by the container user.
-        $root = $this->worktreesRoot($server) . '/' . $server->uuid;
+        // Ensure the worktree root parent exists and is owned by the container user.
+        $root = $this->worktreesRootRel($server) . '/' . $this->repositoryCwd($server);
         try {
-            $this->runAsContainerUser(['/usr/bin/mkdir', '-p', $root]);
+            $this->mkdir($server, $root);
         } catch (RuntimeException $e) {
             // parent may already exist and be writable
         }
 
         if ($this->branchExists($server, $branch)) {
             try {
-                $this->run($server, ['worktree', 'add', $path, $branch]);
+                $this->runAt($server, $this->repositoryCwd($server), ['worktree', 'add', $path, $branch]);
             } catch (RuntimeException $e) {
                 // Branch may be registered against a stale worktree whose
                 // directory was deleted behind our back.
                 $this->pruneWorktrees($server);
-                $this->run($server, ['worktree', 'add', $path, $branch]);
+                $this->runAt($server, $this->repositoryCwd($server), ['worktree', 'add', $path, $branch]);
             }
 
             return;
         }
 
         try {
-            $this->run($server, ['worktree', 'add', '-b', $branch, $path]);
+            $this->runAt($server, $this->repositoryCwd($server), ['worktree', 'add', '-b', $branch, $path]);
         } catch (RuntimeException $e) {
-            if (is_dir($path . '/.git')) {
+            if ($this->isRepositoryAt($server, $cwd)) {
                 // A concurrent request won the race and created it already.
                 return;
             }
 
             $this->pruneWorktrees($server);
-            $this->run($server, ['worktree', 'add', '-b', $branch, $path]);
+            $this->runAt($server, $this->repositoryCwd($server), ['worktree', 'add', '-b', $branch, $path]);
         }
     }
 
     /**
-     * Ensures a sub-user's worktree exists and returns its host path.
+     * Ensures a sub-user's worktree exists and returns its volume-root-relative cwd.
      *
      * @throws RuntimeException
      */
     public function ensureWorktree(Server $server, int $userId, string $branch): string
     {
-        $path = $this->worktreeDirectory($server, $userId);
+        $cwd = $this->worktreeCwd($server, $userId);
 
-        if (!$this->isRepositoryAt($path)) {
+        if (!$this->isRepositoryAt($server, $cwd)) {
             $this->createWorktree($server, $userId, $branch);
         }
 
-        return $path;
+        return $cwd;
     }
 
     /**
-     * Runs a git command in the server's container directory as the container user.
+     * Runs a git command at a volume-root-relative cwd.
      *
      * @param array<int, string> $args
      *
      * @throws RuntimeException if the command fails or times out
      */
-    public function run(Server $server, array $args, bool $captureError = true, bool $trimOutput = true): string
+    public function runAt(Server $server, string $cwdRel, array $args, bool $captureError = true, bool $trimOutput = true): string
     {
-        $dir = $this->containerDirectory($server);
-        if (!is_dir($dir)) {
-            throw new RuntimeException('The server directory does not exist yet.');
+        $result = $this->transports->for($server)->git($server, GitPaths::normalize($cwdRel), $args, $trimOutput);
+
+        if (!$result->isSuccess()) {
+            $error = trim($result->stderr);
+            $output = trim($result->stdout);
+            $message = $error !== '' ? $error : ($output !== '' ? $output : 'Git command failed with exit code ' . $result->exitCode);
+
+            throw new RuntimeException($captureError ? $message : '', $result->exitCode);
         }
 
-        return $this->runIn($dir, $args, $captureError, $trimOutput);
+        return $result->stdout;
     }
 
     /**
-     * Runs a git command in an explicit directory as the container user.
+     * Runs an authenticated git command (fetch/push against GitHub).
      *
-     * @param array<int, string> $args
-     *
-     * @throws RuntimeException if the command fails or times out
-     */
-    public function runIn(string $dir, array $args, bool $captureError = true, bool $trimOutput = true): string
-    {
-        if (!is_dir($dir)) {
-            throw new RuntimeException('The server directory does not exist yet.');
-        }
-
-        $command = array_merge(['/usr/bin/sudo', '-n', '-u', 'pterodactyl', self::GIT_PATH, '-C', $dir], $args);
-
-        $process = new Process($command);
-        $process->setTimeout(120);
-        $process->setIdleTimeout(120);
-        $process->run();
-
-        // Raw output is required for porcelain parsing where a leading space is
-        // a meaningful status column, so trimming must be optional.
-        $raw = $process->getOutput();
-        $output = $trimOutput ? trim($raw) : $raw;
-        $error = trim($process->getErrorOutput());
-
-        if (!$process->isSuccessful()) {
-            $message = $error !== '' ? $error : ($output !== '' ? $output : 'Git command failed with exit code ' . $process->getExitCode());
-            throw new RuntimeException($captureError ? $message : '', (int) $process->getExitCode());
-        }
-
-        return $output;
-    }
-
-    /**
-     * Runs a git command that requires GitHub authentication.
-     *
-     * The token is injected via the GIT_ASKPASS mechanism — git spawns the
-     * askpass binary when it needs credentials and reads the password from its
-     * stdout. We set GIT_ASKPASS to a tiny shell one-liner that echoes the
-     * token from the GIT_TOKEN env var. The token never appears in the process
-     * argument list (so it won't show up in `ps`) and is never written to disk.
-     *
-     * @param array<int, string> $args
-     *
-     * @throws RuntimeException
-     */
-    public function runWithToken(Server $server, array $args, string $token): string
-    {
-        $dir = $this->containerDirectory($server);
-        if (!is_dir($dir)) {
-            throw new RuntimeException('The server directory does not exist yet.');
-        }
-
-        // Build the command with credential.helper overridden to nothing so any
-        // stored helper is ignored, and GIT_ASKPASS set to echo the token.
-        // username is always x-access-token for GitHub PATs / OAuth tokens.
-        $command = array_merge(
-            [
-                '/usr/bin/sudo', '-n', '-u', 'pterodactyl',
-                // Pass the token via environment under sudo
-                '/usr/bin/env',
-                'GIT_ASKPASS=/bin/sh',
-                'GIT_TOKEN=' . $token,
-                'GIT_USERNAME=x-access-token',
-                self::GIT_PATH,
-                '-c', 'credential.helper=',
-                '-c', 'credential.username=x-access-token',
-                '-C', $dir,
-            ],
-            $args
-        );
-
-        // We can't pass env vars through sudo easily without -E; instead we
-        // write a tiny askpass script to a PHP temp file, chmod it, run, then
-        // delete it. But that still touches disk. Better: use sudo env passing.
-        // Actually the cleanest no-disk approach with sudo -n is to embed the
-        // token directly in the remote URL for this one command only.
-        // We rebuild the URL with the token, run the command, done.
-        // The token-embedded URL is only in memory (process args are visible
-        // to root in /proc but not to other users). This is the standard approach
-        // used by GitHub Actions, GitLab CI, etc.
-        //
-        // So we DON'T use this method directly — see injectTokenIntoUrl() instead.
-        // This method is kept as documentation. The actual auth runs via
-        // runWithTokenUrl() below.
-        throw new \LogicException('Use runWithTokenUrl() instead.');
-    }
-
-    /**
-     * Runs a git command that requires auth by rewriting the remote URL to
-     * include the token for this one invocation only. The token-bearing URL
-     * exists only in the process argument list in memory and is never stored.
+     * The token never lands in shell arguments on the target host: on the
+     * Wings transport it travels in the request body and is injected through
+     * GIT_ASKPASS; on the local transport the (existing) technique of a
+     * token-embedded URL for the single invocation is used.
      *
      * @param array<int, string> $args git arguments (must not include the URL)
      *
      * @throws RuntimeException
      */
-    public function runWithTokenUrl(Server $server, array $args, string $remoteUrl, string $token): string
+    public function runWithTokenUrlAt(Server $server, string $cwdRel, array $args, string $remoteUrl, string $token): string
     {
-        $dir = $this->containerDirectory($server);
-        if (!is_dir($dir)) {
-            throw new RuntimeException('The server directory does not exist yet.');
+        $transport = $this->transports->for($server);
+
+        // Wings executes on the node: the token goes through GIT_ASKPASS.
+        if ($transport->id() === 'wings') {
+            $result = $transport->git($server, GitPaths::normalize($cwdRel), $args, true, $token);
+            if (!$result->isSuccess()) {
+                $error = trim($result->stderr);
+                $output = trim($result->stdout);
+                $message = $error !== '' ? $error : ($output !== '' ? $output : 'Git command failed.');
+
+                throw new RuntimeException(str_replace($token, '[REDACTED]', $message), $result->exitCode);
+            }
+
+            return $result->stdout;
         }
 
-        return $this->runWithTokenUrlIn($dir, $args, $remoteUrl, $token);
-    }
-
-    /**
-     * Runs a git command that requires auth by rewriting the remote URL to
-     * include the token for this one invocation only. The token-bearing URL
-     * exists only in the process argument list in memory and is never stored.
-     *
-     * @param array<int, string> $args git arguments (must not include the URL)
-     *
-     * @throws RuntimeException
-     */
-    public function runWithTokenUrlIn(string $dir, array $args, string $remoteUrl, string $token): string
-    {
-        if (!is_dir($dir)) {
-            throw new RuntimeException('The server directory does not exist yet.');
-        }
-
+        // Local execution: rewrite the remote URL, embedding the token for the
+        // one invocation, and neutralise any stored credential helper.
         $authedUrl = $this->buildAuthUrl($remoteUrl, $token);
-
-        // Override credential.helper to empty so no stored credentials interfere,
-        // and pass the token-embedded URL via the extraurl config override.
-        $command = array_merge(
-            [
-                '/usr/bin/sudo', '-n', '-u', 'pterodactyl',
-                self::GIT_PATH,
-                '-c', 'credential.helper=',
-                '-C', $dir,
-            ],
-            $args
+        $finalArgs = array_merge(
+            ['-c', 'credential.helper=', '-c', 'credential.username=x-access-token'],
+            array_map(fn (string $arg): string => $arg === 'origin' ? $authedUrl : $arg, $args)
         );
 
-        // Replace any bare 'origin' reference in args with the authed URL so
-        // git uses the token URL directly for this one call.
-        $command = array_map(
-            fn (string $arg) => $arg === 'origin' ? $authedUrl : $arg,
-            $command
-        );
+        $result = $transport->git($server, GitPaths::normalize($cwdRel), $finalArgs, true);
+        if (!$result->isSuccess()) {
+            $error = trim($result->stderr);
+            $output = trim($result->stdout);
+            $message = $error !== '' ? $error : ($output !== '' ? $output : 'Git command failed.');
 
-        $process = new Process($command);
-        $process->setTimeout(120);
-        $process->setIdleTimeout(120);
-        $process->run();
-
-        $output = trim($process->getOutput());
-        $error = trim($process->getErrorOutput());
-
-        if (!$process->isSuccessful()) {
-            // Strip any token from error messages before surfacing them
-            $message = $this->redactToken($error !== '' ? $error : ($output !== '' ? $output : 'Git command failed.'), $token);
-            throw new RuntimeException($message, (int) $process->getExitCode());
+            throw new RuntimeException(str_replace($token, '[REDACTED]', $message), $result->exitCode);
         }
 
-        return $output;
+        return $result->stdout;
     }
 
     /**
@@ -386,50 +312,8 @@ class GitService
      */
     public function buildAuthUrl(string $remoteUrl, string $token): string
     {
-        // Strip any existing credentials first
         $clean = preg_replace('#^(https?://)([^@/]+@)#', '$1', $remoteUrl) ?? $remoteUrl;
-        // Inject token
+
         return preg_replace('#^(https?://)#', '${1}x-access-token:' . rawurlencode($token) . '@', $clean) ?? $clean;
-    }
-
-    /**
-     * Removes a token value from a string to prevent credential leaks in error messages.
-     */
-    private function redactToken(string $message, string $token): string
-    {
-        return str_replace($token, '[REDACTED]', $message);
-    }
-
-    /**
-     * Executes a non-git command helper (e.g. writing credential files) as the container user.
-     *
-     * @param array<int, string> $command
-     */
-    public function runAsContainerUser(array $command, ?int $timeout = 30): void
-    {
-        $process = new Process(array_merge(['/usr/bin/sudo', '-n', '-u', 'pterodactyl'], $command));
-        $process->setTimeout($timeout);
-        $process->run();
-
-        if (!$process->isSuccessful()) {
-            throw new RuntimeException(trim($process->getErrorOutput()) ?: 'Command failed.');
-        }
-    }
-
-    /**
-     * Runs a command as the container user, feeding the provided content via stdin.
-     *
-     * @param array<int, string> $command
-     */
-    public function runAsContainerUserWithInput(array $command, string $input, ?int $timeout = 30): void
-    {
-        $process = new Process(array_merge(['/usr/bin/sudo', '-n', '-u', 'pterodactyl'], $command));
-        $process->setTimeout($timeout);
-        $process->setInput($input);
-        $process->run();
-
-        if (!$process->isSuccessful()) {
-            throw new RuntimeException(trim($process->getErrorOutput()) ?: 'Command failed.');
-        }
     }
 }
