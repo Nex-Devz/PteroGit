@@ -6,10 +6,29 @@ Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 
 Releases are created automatically from `v*` tags (see `.github/workflows/release.yml`).
 
-## [Unreleased]
+## [1.4.0] – 2026-09-11
 
 ### Added
-- None yet.
+- **Per-subuser git worktrees**: every server now runs a dedicated Git worktree per panel
+  subuser (`git_worktrees` table + migration), giving each collaborator an isolated working
+  tree and branch. Operations are attributed to the acting panel user and run inside that
+  user's worktree, so concurrent collaborators can no longer overwrite each other's changes.
+- **Multi-node support — git runs on the server's Wings node**: the panel can route every git
+  operation to the node that actually hosts the server volume over HTTPS, authenticated with a
+  short-lived HS256 JWT signed with the node's daemon token (`auto`/`local`/`wings` transport
+  selection). The real volume path is resolved by the node itself, so a stale `nodes.daemonBase`
+  can no longer point git at an empty directory, and credentials travel only in the request
+  body via `GIT_ASKPASS` (never in process args or logs). Nodes without the channel fall back
+  to local execution, so co-located/single-node installs keep working untouched.
+- **Wings git channel Go module** (`wings/`): a small, dependency-free git channel for
+  `pterodactyl/wings` with git exec, file ops and a health probe, path-traversal guards and a
+  container-user privilege drop. Integration guide in `wings/README.md`; built and tested on
+  Linux in CI (`go test ./...`).
+
+### Changed
+- `config('pterodactyl.git')` gains transport options: `transport` (`auto|local|wings`),
+  `data_directory` and `probe_ttl` (defaults are backwards compatible; no config change needed
+  on upgrade).
 
 ## [1.3.0] – 2026-09-10
 
