@@ -37,13 +37,32 @@ class GitService
     }
 
     /**
-     * Validates that a user-supplied path stays within the server's container directory.
+     * The host path under which per-subuser git worktrees live.
+     *
+     * Worktrees are kept outside the container volume (a sibling of the server
+     * folder) so they are never picked up by the runtime and never appear in
+     * the panel file manager.
+     */
+    public function worktreesRoot(Server $server): string
+    {
+        return dirname($this->containerDirectory($server)) . '/.git-worktrees';
+    }
+
+    /**
+     * The host path for a single sub-user's git worktree.
+     */
+    public function worktreeDirectory(Server $server, int $userId): string
+    {
+        return $this->worktreesRoot($server) . '/' . $server->uuid . '/' . $userId;
+    }
+
+    /**
+     * Validates that a user-supplied path stays within a given directory root.
      *
      * @throws RuntimeException
      */
-    public function resolvePath(Server $server, string $path): string
+    public function resolvePathIn(string $root, string $path): string
     {
-        $root = $this->containerDirectory($server);
         $normalized = str_replace('\\', '/', $path);
         if ($normalized === '') {
             $normalized = '/';
@@ -60,11 +79,29 @@ class GitService
     }
 
     /**
+     * Validates that a user-supplied path stays within the server's container directory.
+     *
+     * @throws RuntimeException
+     */
+    public function resolvePath(Server $server, string $path): string
+    {
+        return $this->resolvePathIn($this->containerDirectory($server), $path);
+    }
+
+    /**
+     * Returns true if the given directory currently contains a git repository.
+     */
+    public function isRepositoryAt(string $dir): bool
+    {
+        return is_dir($dir) && is_dir($dir . '/.git');
+    }
+
+    /**
      * Returns true if the server directory currently contains a git repository.
      */
     public function isRepository(Server $server): bool
     {
-        return is_dir($this->containerDirectory($server) . '/.git');
+        return $this->isRepositoryAt($this->containerDirectory($server));
     }
 
     public function repositoryError(Server $server): ?string
@@ -77,6 +114,95 @@ class GitService
     }
 
     /**
+     * Returns true when the given branch exists in the repository.
+     */
+    public function branchExists(Server $server, string $branch): bool
+    {
+        try {
+            $this->run($server, ['rev-parse', '--verify', '--quiet', 'refs/heads/' . $branch]);
+
+            return true;
+        } catch (RuntimeException $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Drops metadata for worktrees whose directories have disappeared.
+     */
+    public function pruneWorktrees(Server $server): void
+    {
+        try {
+            $this->run($server, ['worktree', 'prune']);
+        } catch (RuntimeException $e) {
+            // nothing to prune
+        }
+    }
+
+    /**
+     * Creates (or re-registers) a sub-user's worktree on its own branch.
+     *
+     * The worktree is created as the container user and lives outside the
+     * container volume. If the branch already exists (e.g. the worktree was
+     * cleaned up after a push) it is simply checked out again.
+     *
+     * @throws RuntimeException
+     */
+    public function createWorktree(Server $server, int $userId, string $branch): void
+    {
+        $path = $this->worktreeDirectory($server, $userId);
+
+        // Ensure the worktree root exists and is owned by the container user.
+        $root = $this->worktreesRoot($server) . '/' . $server->uuid;
+        try {
+            $this->runAsContainerUser(['/usr/bin/mkdir', '-p', $root]);
+        } catch (RuntimeException $e) {
+            // parent may already exist and be writable
+        }
+
+        if ($this->branchExists($server, $branch)) {
+            try {
+                $this->run($server, ['worktree', 'add', $path, $branch]);
+            } catch (RuntimeException $e) {
+                // Branch may be registered against a stale worktree whose
+                // directory was deleted behind our back.
+                $this->pruneWorktrees($server);
+                $this->run($server, ['worktree', 'add', $path, $branch]);
+            }
+
+            return;
+        }
+
+        try {
+            $this->run($server, ['worktree', 'add', '-b', $branch, $path]);
+        } catch (RuntimeException $e) {
+            if (is_dir($path . '/.git')) {
+                // A concurrent request won the race and created it already.
+                return;
+            }
+
+            $this->pruneWorktrees($server);
+            $this->run($server, ['worktree', 'add', '-b', $branch, $path]);
+        }
+    }
+
+    /**
+     * Ensures a sub-user's worktree exists and returns its host path.
+     *
+     * @throws RuntimeException
+     */
+    public function ensureWorktree(Server $server, int $userId, string $branch): string
+    {
+        $path = $this->worktreeDirectory($server, $userId);
+
+        if (!$this->isRepositoryAt($path)) {
+            $this->createWorktree($server, $userId, $branch);
+        }
+
+        return $path;
+    }
+
+    /**
      * Runs a git command in the server's container directory as the container user.
      *
      * @param array<int, string> $args
@@ -86,6 +212,22 @@ class GitService
     public function run(Server $server, array $args, bool $captureError = true, bool $trimOutput = true): string
     {
         $dir = $this->containerDirectory($server);
+        if (!is_dir($dir)) {
+            throw new RuntimeException('The server directory does not exist yet.');
+        }
+
+        return $this->runIn($dir, $args, $captureError, $trimOutput);
+    }
+
+    /**
+     * Runs a git command in an explicit directory as the container user.
+     *
+     * @param array<int, string> $args
+     *
+     * @throws RuntimeException if the command fails or times out
+     */
+    public function runIn(string $dir, array $args, bool $captureError = true, bool $trimOutput = true): string
+    {
         if (!is_dir($dir)) {
             throw new RuntimeException('The server directory does not exist yet.');
         }
@@ -178,6 +320,24 @@ class GitService
     public function runWithTokenUrl(Server $server, array $args, string $remoteUrl, string $token): string
     {
         $dir = $this->containerDirectory($server);
+        if (!is_dir($dir)) {
+            throw new RuntimeException('The server directory does not exist yet.');
+        }
+
+        return $this->runWithTokenUrlIn($dir, $args, $remoteUrl, $token);
+    }
+
+    /**
+     * Runs a git command that requires auth by rewriting the remote URL to
+     * include the token for this one invocation only. The token-bearing URL
+     * exists only in the process argument list in memory and is never stored.
+     *
+     * @param array<int, string> $args git arguments (must not include the URL)
+     *
+     * @throws RuntimeException
+     */
+    public function runWithTokenUrlIn(string $dir, array $args, string $remoteUrl, string $token): string
+    {
         if (!is_dir($dir)) {
             throw new RuntimeException('The server directory does not exist yet.');
         }

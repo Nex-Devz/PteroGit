@@ -20,6 +20,7 @@ export interface GitRepositoryInfo {
 export interface GitStatus {
     is_repository: boolean;
     connected: boolean;
+    worktree: boolean;
     current_branch: string | null;
     ahead: number;
     behind: number;
@@ -48,6 +49,7 @@ export interface GitCommit {
 const toStatus = (data: any): GitStatus => ({
     is_repository: data.is_repository,
     connected: data.connected,
+    worktree: !!data.worktree,
     current_branch: data.current_branch,
     ahead: data.ahead,
     behind: data.behind,

@@ -3,8 +3,11 @@
 namespace Pterodactyl\Services\Git;
 
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\Cache;
 use Pterodactyl\Models\Server;
+use Pterodactyl\Models\User;
 use Pterodactyl\Models\GitOperation;
+use Pterodactyl\Models\GitWorktree;
 use Pterodactyl\Models\GithubAccount;
 use Pterodactyl\Models\ServerGitRepository;
 use RuntimeException;
@@ -15,10 +18,150 @@ use RuntimeException;
  */
 class RepositoryService
 {
+    private ?int $actingUserId = null;
+
     public function __construct(
         private readonly GitService $git,
         private readonly GitHubService $github,
     ) {
+    }
+
+    /**
+     * Returns a per-user context for this service.
+     *
+     * Sub-users of a server operate on their own git worktree (isolated branch
+     * and working directory) instead of the server owner's shared checkout.
+     * Passing null (the default) always targets the server's container volume.
+     */
+    public function forUser(?int $userId): self
+    {
+        $clone = clone $this;
+        $clone->actingUserId = $userId;
+
+        return $clone;
+    }
+
+    /**
+     * Resolves the git directory that the current request should operate on.
+     *
+     * The actor is the server/account owner (or there is no linked repository),
+     * the shared container checkout is used. Any other user gets their own
+     * personal worktree, created on first use.
+     */
+    private function effectiveDirectory(Server $server): string
+    {
+        $user = $this->actingUserId;
+        if ($user === null) {
+            return $this->git->containerDirectory($server);
+        }
+
+        $repository = $this->linked($server);
+        if (!$repository) {
+            return $this->git->containerDirectory($server);
+        }
+
+        if ($server->owner_id === $user || $repository->githubAccount?->user_id === $user) {
+            return $this->git->containerDirectory($server);
+        }
+
+        return $this->ensureWorktree($server, $user);
+    }
+
+    /**
+     * Returns true when the current actor is running on their own worktree.
+     */
+    private function usingWorktree(Server $server): bool
+    {
+        return $this->actingUserId !== null
+            && !in_array($this->actingUserId, [$server->owner_id, $this->linked($server)?->githubAccount?->user_id], true);
+    }
+
+    /**
+     * Creates (once) the sub-user's personal worktree and returns its host path.
+     *
+     * The per-user cache lock prevents two concurrent requests for the same
+     * user from racing during the initial `git worktree add`.
+     */
+    private function ensureWorktree(Server $server, int $userId): string
+    {
+        $path = $this->git->worktreeDirectory($server, $userId);
+
+        if (is_dir($path . '/.git')) {
+            return $path;
+        }
+
+        $lock = Cache::lock('git:worktree:' . $server->id . ':' . $userId, 120);
+        try {
+            if (!$lock->acquire()) {
+                throw new RuntimeException('Another request is already creating your workspace. Please retry.');
+            }
+
+            if (is_dir($path . '/.git')) {
+                return $path;
+            }
+
+            $row = GitWorktree::firstOrNew(['server_id' => $server->id, 'user_id' => $userId]);
+            if ($row->branch === null || $row->branch === '') {
+                $row->branch = $this->worktreeBranchName($server, $userId);
+                $row->save();
+            }
+
+            $this->git->ensureWorktree($server, $userId, $row->branch);
+
+            return $path;
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * Builds a deterministic, unique branch name for a sub-user's worktree.
+     */
+    private function worktreeBranchName(Server $server, int $userId): string
+    {
+        $username = (string) (User::query()->find($userId)?->username ?? 'user');
+        $safeUser = strtolower(preg_replace('/[^a-zA-Z0-9._\/-]+/', '-', $username) ?? 'user');
+        $safeUser = trim($safeUser, '.-');
+        if ($safeUser === '') {
+            $safeUser = 'user' . $userId;
+        }
+
+        $default = (string) preg_replace('/[^a-zA-Z0-9._\/-]+/', '-', $this->linked($server)?->default_branch ?? 'main');
+        $default = trim($default, '-') ?: 'main';
+
+        return "{$safeUser}-{$userId}/{$default}";
+    }
+
+    /**
+     * Runs git on the current actor's effective directory.
+     */
+    private function run(Server $server, array $args, bool $captureError = true, bool $trimOutput = true): string
+    {
+        return $this->git->runIn($this->effectiveDirectory($server), $args, $captureError, $trimOutput);
+    }
+
+    /**
+     * Runs an authenticated git command on the current actor's effective directory.
+     */
+    private function runWithTokenUrl(Server $server, array $args, string $remoteUrl, string $token): string
+    {
+        return $this->git->runWithTokenUrlIn($this->effectiveDirectory($server), $args, $remoteUrl, $token);
+    }
+
+    /**
+     * Returns true when the actor's effective directory is a git repository.
+     */
+    private function isRepo(Server $server): bool
+    {
+        return $this->git->isRepositoryAt($this->effectiveDirectory($server));
+    }
+
+    /**
+     * Resolves a path within the actor's effective directory.
+     */
+    private function resolvePath(Server $server, string $path): string
+    {
+        return $this->git->resolvePathIn($this->effectiveDirectory($server), $path);
     }
 
     /**
@@ -52,9 +195,9 @@ class RepositoryService
         $this->begin($server, 'initialize', null, $defaultBranch);
 
         try {
-            $this->git->run($server, ['init', '-b', $defaultBranch ?: 'main']);
-            $this->git->run($server, ['config', 'user.name', $name]);
-            $this->git->run($server, ['config', 'user.email', $email]);
+            $this->run($server, ['init', '-b', $defaultBranch ?: 'main']);
+            $this->run($server, ['config', 'user.name', $name]);
+            $this->run($server, ['config', 'user.email', $email]);
         } catch (RuntimeException $exception) {
             $this->fail($exception->getMessage());
 
@@ -93,21 +236,21 @@ class RepositoryService
             $token = $account->accessToken();
 
             if ($mode === 'init') {
-                $this->git->run($server, ['init', '-b', $branch]);
-                $this->git->run($server, ['remote', 'add', 'origin', $remoteUrl]);
-                $this->git->run($server, ['config', 'user.name', $account->username]);
-                $this->git->run($server, ['config', 'user.email', $account->username . '@users.noreply.github.com']);
+                $this->run($server, ['init', '-b', $branch]);
+                $this->run($server, ['remote', 'add', 'origin', $remoteUrl]);
+                $this->run($server, ['config', 'user.name', $account->username]);
+                $this->run($server, ['config', 'user.email', $account->username . '@users.noreply.github.com']);
             } else {
-                $this->git->run($server, ['init', '-b', $branch]);
+                $this->run($server, ['init', '-b', $branch]);
                 $this->ensureRemote($server, $remoteUrl);
                 // Fetch with an explicit refspec so the remote-tracking ref
                 // refs/remotes/origin/<branch> is written even though we pass
                 // the token-embedded URL directly instead of the remote name.
                 $refspec = "refs/heads/{$branch}:refs/remotes/origin/{$branch}";
-                $this->git->runWithTokenUrl($server, ['fetch', 'origin', $refspec], $remoteUrl, $token);
-                $this->git->run($server, ['checkout', '-B', $branch, 'origin/' . $branch]);
+                $this->runWithTokenUrl($server, ['fetch', 'origin', $refspec], $remoteUrl, $token);
+                $this->run($server, ['checkout', '-B', $branch, 'origin/' . $branch]);
                 if ($mode === 'clone') {
-                    $this->git->run($server, ['reset', '--hard', 'origin/' . $branch]);
+                    $this->run($server, ['reset', '--hard', 'origin/' . $branch]);
                 }
             }
         } catch (RuntimeException $exception) {
@@ -137,14 +280,14 @@ class RepositoryService
     private function ensureRemote(Server $server, string $remoteUrl): void
     {
         try {
-            $this->git->run($server, ['remote', 'get-url', 'origin']);
+            $this->run($server, ['remote', 'get-url', 'origin']);
         } catch (RuntimeException $e) {
-            $this->git->run($server, ['remote', 'add', 'origin', $remoteUrl]);
+            $this->run($server, ['remote', 'add', 'origin', $remoteUrl]);
 
             return;
         }
 
-        $this->git->run($server, ['remote', 'set-url', 'origin', $remoteUrl]);
+        $this->run($server, ['remote', 'set-url', 'origin', $remoteUrl]);
     }
 
     /**
@@ -153,6 +296,7 @@ class RepositoryService
      */
     public function disconnect(Server $server): void
     {
+        GitWorktree::query()->where('server_id', $server->id)->delete();
         ServerGitRepository::query()->where('server_id', $server->id)->delete();
     }
 
@@ -164,8 +308,9 @@ class RepositoryService
         $repository = $repository ?? $this->linked($server);
 
         $data = [
-            'is_repository' => $this->git->isRepository($server),
+            'is_repository' => $this->isRepo($server),
             'connected' => (bool) $repository,
+            'worktree' => $this->usingWorktree($server),
             'current_branch' => null,
             'ahead' => 0,
             'behind' => 0,
@@ -189,15 +334,15 @@ class RepositoryService
         }
 
         try {
-            $data['current_branch'] = $this->git->run($server, ['rev-parse', '--abbrev-ref', 'HEAD']);
+            $data['current_branch'] = $this->run($server, ['rev-parse', '--abbrev-ref', 'HEAD']);
         } catch (RuntimeException $e) {
             $data['current_branch'] = null;
         }
 
         try {
-            $this->git->run($server, ['rev-parse', '--verify', 'HEAD']);
-            $data['last_commit'] = substr($this->git->run($server, ['rev-parse', 'HEAD']), 0, 7);
-            $data['last_commit_message'] = $this->git->run($server, ['log', '-1', '--pretty=%s']);
+            $this->run($server, ['rev-parse', '--verify', 'HEAD']);
+            $data['last_commit'] = substr($this->run($server, ['rev-parse', 'HEAD']), 0, 7);
+            $data['last_commit_message'] = $this->run($server, ['log', '-1', '--pretty=%s']);
         } catch (RuntimeException $e) {
             // no commits yet
         }
@@ -206,7 +351,7 @@ class RepositoryService
         $data['is_dirty'] = count($data['changes']) > 0;
 
         try {
-            $statusInfo = $this->git->run($server, ['status', '-sb']);
+            $statusInfo = $this->run($server, ['status', '-sb']);
             $branchLine = explode("\n", trim($statusInfo))[0] ?? '';
             if (preg_match('/\[ahead ([0-9]+)(, behind ([0-9]+))?\]/', $branchLine, $m)) {
                 $data['ahead'] = (int) $m[1];
@@ -231,13 +376,13 @@ class RepositoryService
         $args = ['status', '--porcelain'];
         if ($path) {
             $args[] = '--';
-            $args[] = $this->git->resolvePath($server, $path);
+            $args[] = $this->resolvePath($server, $path);
         }
 
         // Raw (untrimmed) output is required: in porcelain format column 0 is
         // the index status and may be a meaningful space for unstaged changes,
         // so the output must never be left-trimmed before parsing.
-        $output = $this->git->run($server, $args, true, false);
+        $output = $this->run($server, $args, true, false);
 
         $changes = [];
         foreach (preg_split('/\r?\n/', $output) ?: [] as $line) {
@@ -306,17 +451,17 @@ class RepositoryService
 
         if ($root) {
             $args[] = '--';
-            $args[] = $this->git->resolvePath($server, $root);
+            $args[] = $this->resolvePath($server, $root);
         } elseif ($file) {
             $args[] = '--';
-            $args[] = $this->git->resolvePath($server, $file);
+            $args[] = $this->resolvePath($server, $file);
         }
 
         try {
-            return $this->git->run($server, $args);
+            return $this->run($server, $args);
         } catch (RuntimeException $e) {
             if (str_contains($e->getMessage(), 'ambiguous argument')) {
-                return $this->git->run($server, ['--no-pager', 'diff']);
+                return $this->run($server, ['--no-pager', 'diff']);
             }
 
             throw $e;
@@ -326,19 +471,19 @@ class RepositoryService
     public function stage(Server $server, array $files): void
     {
         $this->assertRepository($server);
-        $this->git->run($server, array_merge(['add', '--'], $this->resolveFiles($server, $files)));
+        $this->run($server, array_merge(['add', '--'], $this->resolveFiles($server, $files)));
     }
 
     public function unstage(Server $server, array $files): void
     {
         $this->assertRepository($server);
-        $this->git->run($server, array_merge(['restore', '--staged', '--'], $this->resolveFiles($server, $files)));
+        $this->run($server, array_merge(['restore', '--staged', '--'], $this->resolveFiles($server, $files)));
     }
 
     public function discard(Server $server, array $files): void
     {
         $this->assertRepository($server);
-        $this->git->run($server, array_merge(['checkout', '--'], $this->resolveFiles($server, $files)));
+        $this->run($server, array_merge(['checkout', '--'], $this->resolveFiles($server, $files)));
     }
 
     public function commit(Server $server, string $message, bool $stageAll = false): string
@@ -354,19 +499,19 @@ class RepositoryService
             // Optionally stage everything first so a commit can never fail just
             // because the client forgot to hit "Stage all" beforehand.
             if ($stageAll) {
-                $this->git->run($server, ['add', '-A']);
+                $this->run($server, ['add', '-A']);
             }
 
-            $staged = $this->git->run($server, ['diff', '--cached', '--name-only']);
+            $staged = $this->run($server, ['diff', '--cached', '--name-only']);
             if (trim($staged) === '') {
                 throw new RuntimeException('No changes have been staged for commit. Stage files first, or enable "stage all" when committing.');
             }
 
-            $this->git->run($server, ['config', 'user.name']);
+            $this->run($server, ['config', 'user.name']);
             $this->assertIdentity($server);
 
-            $this->git->run($server, ['commit', '-m', $message]);
-            $sha = $this->git->run($server, ['rev-parse', 'HEAD']);
+            $this->run($server, ['commit', '-m', $message]);
+            $sha = $this->run($server, ['rev-parse', 'HEAD']);
         } catch (RuntimeException $exception) {
             $this->fail($exception->getMessage());
 
@@ -398,8 +543,8 @@ class RepositoryService
             $branch = $this->currentBranchish($server);
 
             $refspec = "refs/heads/{$branch}:refs/remotes/origin/{$branch}";
-            $this->git->runWithTokenUrl($server, ['fetch', 'origin', $refspec], $remoteUrl, $token);
-            $this->git->run($server, ['merge', '--ff-only', 'origin/' . $branch]);
+            $this->runWithTokenUrl($server, ['fetch', 'origin', $refspec], $remoteUrl, $token);
+            $this->run($server, ['merge', '--ff-only', 'origin/' . $branch]);
         } catch (RuntimeException $exception) {
             $this->fail($exception->getMessage());
 
@@ -421,7 +566,7 @@ class RepositoryService
             $token = $repository->githubAccount->accessToken();
             $remoteUrl = $repository->remote_url;
 
-            $this->git->runWithTokenUrl($server, ['push', 'origin', 'HEAD'], $remoteUrl, $token);
+            $this->runWithTokenUrl($server, ['push', 'origin', 'HEAD'], $remoteUrl, $token);
         } catch (RuntimeException $exception) {
             $this->fail($exception->getMessage());
 
@@ -437,9 +582,9 @@ class RepositoryService
     {
         $this->assertRepository($server);
 
-        $localOutput = $this->git->run($server, ['branch', '--list']);
-        $remoteOutput = $this->git->run($server, ['branch', '-r', '--list']);
-        $current = $this->git->run($server, ['rev-parse', '--abbrev-ref', 'HEAD']);
+        $localOutput = $this->run($server, ['branch', '--list']);
+        $remoteOutput = $this->run($server, ['branch', '-r', '--list']);
+        $current = $this->run($server, ['rev-parse', '--abbrev-ref', 'HEAD']);
 
         $local = array_values(array_filter(array_map('trim', explode("\n", $localOutput))));
         $remote = array_values(array_filter(array_map(fn ($line) => trim($line), explode("\n", $remoteOutput))));
@@ -458,7 +603,7 @@ class RepositoryService
 
         try {
             $this->assertRepository($server);
-            $this->git->run($server, ['branch', $name, $basedOn]);
+            $this->run($server, ['branch', $name, $basedOn]);
         } catch (RuntimeException $exception) {
             $this->fail($exception->getMessage());
             throw $exception;
@@ -474,7 +619,7 @@ class RepositoryService
 
         try {
             $this->assertRepository($server);
-            $this->git->run($server, ['checkout', $name]);
+            $this->run($server, ['checkout', $name]);
         } catch (RuntimeException $exception) {
             $this->fail($exception->getMessage());
             throw $exception;
@@ -482,7 +627,14 @@ class RepositoryService
 
         $this->succeed();
 
-        ServerGitRepository::query()->where('server_id', $server->id)->update(['current_branch' => $name]);
+        if ($this->usingWorktree($server) && $this->actingUserId !== null) {
+            GitWorktree::updateOrCreate(
+                ['server_id' => $server->id, 'user_id' => $this->actingUserId],
+                ['branch' => $name],
+            );
+        } else {
+            ServerGitRepository::query()->where('server_id', $server->id)->update(['current_branch' => $name]);
+        }
 
         return $this->status($server);
     }
@@ -495,7 +647,7 @@ class RepositoryService
         try {
             $this->assertRepository($server);
             $args = ['branch', $force ? '-D' : '-d', $name];
-            $this->git->run($server, $args);
+            $this->run($server, $args);
         } catch (RuntimeException $exception) {
             $this->fail($exception->getMessage());
             throw $exception;
@@ -517,11 +669,11 @@ class RepositoryService
             '--skip=' . max(0, $offset),
         ];
 
-        $output = $this->git->run($server, $args);
+        $output = $this->run($server, $args);
 
         // Count total commits for pagination metadata
         try {
-            $total = (int) $this->git->run($server, ['rev-list', '--count', 'HEAD']);
+            $total = (int) $this->run($server, ['rev-list', '--count', 'HEAD']);
         } catch (RuntimeException $e) {
             $total = 0;
         }
@@ -556,7 +708,7 @@ class RepositoryService
         try {
             $this->assertRepository($server);
             $this->assertIdentity($server);
-            $this->git->run($server, ['revert', '--no-edit', $sha]);
+            $this->run($server, ['revert', '--no-edit', $sha]);
         } catch (RuntimeException $exception) {
             $this->fail($exception->getMessage());
             throw $exception;
@@ -570,7 +722,7 @@ class RepositoryService
     public function getGitignore(Server $server): string
     {
         $this->assertRepository($server);
-        $path = $this->git->containerDirectory($server) . '/.gitignore';
+        $path = $this->effectiveDirectory($server) . '/.gitignore';
 
         return file_exists($path) ? (string) file_get_contents($path) : '';
     }
@@ -581,7 +733,7 @@ class RepositoryService
 
         try {
             $this->assertRepository($server);
-            $path = $this->git->containerDirectory($server) . '/.gitignore';
+            $path = $this->effectiveDirectory($server) . '/.gitignore';
             $this->git->runAsContainerUserWithInput(['/usr/bin/tee', $path], $content);
             $this->git->runAsContainerUser(['/usr/bin/chown', 'pterodactyl:pterodactyl', $path]);
         } catch (RuntimeException $exception) {
@@ -597,12 +749,12 @@ class RepositoryService
         $this->assertRepository($server);
 
         try {
-            $name = $this->git->run($server, ['config', 'user.name']);
+            $name = $this->run($server, ['config', 'user.name']);
         } catch (RuntimeException $e) {
             $name = '';
         }
         try {
-            $email = $this->git->run($server, ['config', 'user.email']);
+            $email = $this->run($server, ['config', 'user.email']);
         } catch (RuntimeException $e) {
             $email = '';
         }
@@ -616,8 +768,8 @@ class RepositoryService
 
         try {
             $this->assertRepository($server);
-            $this->git->run($server, ['config', 'user.name', $name]);
-            $this->git->run($server, ['config', 'user.email', $email]);
+            $this->run($server, ['config', 'user.name', $name]);
+            $this->run($server, ['config', 'user.email', $email]);
         } catch (RuntimeException $exception) {
             $this->fail($exception->getMessage());
             throw $exception;
@@ -629,7 +781,7 @@ class RepositoryService
     public function remote(Server $server): array
     {
         $this->assertRepository($server);
-        $url = $this->git->run($server, ['remote', 'get-url', 'origin']);
+        $url = $this->run($server, ['remote', 'get-url', 'origin']);
 
         return ['name' => 'origin', 'url' => $this->sanitizeUrl($url)];
     }
@@ -651,12 +803,12 @@ class RepositoryService
             throw new RuntimeException('No files were provided.');
         }
 
-        return array_map(fn (string $file) => $this->git->resolvePath($server, $file), $files);
+        return array_map(fn (string $file) => $this->resolvePath($server, $file), $files);
     }
 
     private function assertRepository(Server $server): void
     {
-        if (!$this->git->isRepository($server)) {
+        if (!$this->isRepo($server)) {
             throw new RuntimeException('The server directory is not a git repository.');
         }
     }
@@ -677,8 +829,8 @@ class RepositoryService
         $remoteUrl = $repository->remote_url;
 
         $refspec = "refs/heads/{$branch}:refs/remotes/origin/{$branch}";
-        $this->git->runWithTokenUrl($server, ['fetch', 'origin', $refspec], $remoteUrl, $token);
-        $this->git->run($server, ['branch', '--set-upstream-to', 'origin/' . $branch, $branch]);
+        $this->runWithTokenUrl($server, ['fetch', 'origin', $refspec], $remoteUrl, $token);
+        $this->run($server, ['branch', '--set-upstream-to', 'origin/' . $branch, $branch]);
     }
 
     /**
@@ -687,8 +839,8 @@ class RepositoryService
     public function hardReset(Server $server, string $ref): void
     {
         $this->assertRepository($server);
-        $this->git->run($server, ['clean', '-fd']);
-        $this->git->run($server, ['reset', '--hard', $ref]);
+        $this->run($server, ['clean', '-fd']);
+        $this->run($server, ['reset', '--hard', $ref]);
     }
 
     /**
@@ -698,17 +850,17 @@ class RepositoryService
     {
         $this->assertRepository($server);
         try {
-            $this->git->run($server, ['checkout', $ref]);
+            $this->run($server, ['checkout', $ref]);
         } catch (RuntimeException $e) {
-            $this->git->run($server, ['checkout', '-b', $ref]);
+            $this->run($server, ['checkout', '-b', $ref]);
         }
     }
 
     private function assertIdentity(Server $server): void
     {
         try {
-            $name = $this->git->run($server, ['config', 'user.name']);
-            $email = $this->git->run($server, ['config', 'user.email']);
+            $name = $this->run($server, ['config', 'user.name']);
+            $email = $this->run($server, ['config', 'user.email']);
         } catch (RuntimeException $e) {
             throw new RuntimeException('Git identity is not configured. Set a name and email on the Settings tab first.');
         }
@@ -721,7 +873,7 @@ class RepositoryService
     private function currentBranchish(Server $server): string
     {
         try {
-            return $this->git->run($server, ['rev-parse', '--abbrev-ref', 'HEAD']);
+            return $this->run($server, ['rev-parse', '--abbrev-ref', 'HEAD']);
         } catch (RuntimeException $e) {
             return 'main';
         }
@@ -736,15 +888,15 @@ class RepositoryService
         $this->assertValidReference($sha);
 
         // Full hash
-        $fullSha = trim($this->git->run($server, ['rev-parse', $sha]));
+        $fullSha = trim($this->run($server, ['rev-parse', $sha]));
 
         // Commit metadata
         $format = '%H|%h|%an|%ae|%s|%ar|%ai';
-        $log = $this->git->run($server, ['log', '-1', "--pretty=format:{$format}", $fullSha]);
+        $log = $this->run($server, ['log', '-1', "--pretty=format:{$format}", $fullSha]);
         [$hash, $short, $author, $email, $subject, $relative, $date] = array_pad(explode('|', $log, 7), 7, '');
 
         // Changed files with status
-        $statRaw = $this->git->run($server, ['diff-tree', '--no-commit-id', '-r', '--name-status', $fullSha]);
+        $statRaw = $this->run($server, ['diff-tree', '--no-commit-id', '-r', '--name-status', $fullSha]);
         $files = [];
         foreach (array_filter(explode("\n", $statRaw)) as $line) {
             $parts = preg_split('/\s+/', $line, 2);
@@ -758,10 +910,10 @@ class RepositoryService
 
         // If merge commit, use -m flag to show combined diff
         if (count($files) === 0) {
-            $parents = trim($this->git->run($server, ['rev-list', '--parents', '-n', '1', $fullSha]));
+            $parents = trim($this->run($server, ['rev-list', '--parents', '-n', '1', $fullSha]));
             $parentCount = count(explode(' ', $parents));
             if ($parentCount > 1) {
-                $statRaw = $this->git->run($server, ['diff-tree', '--no-commit-id', '-r', '-m', '--name-status', $fullSha]);
+                $statRaw = $this->run($server, ['diff-tree', '--no-commit-id', '-r', '-m', '--name-status', $fullSha]);
                 foreach (array_filter(explode("\n", $statRaw)) as $line) {
                     $parts = preg_split('/\s+/', $line, 2);
                     if (count($parts) === 2) {
@@ -774,10 +926,10 @@ class RepositoryService
         // Unified diff (suppress binary file diffs)
         $diff = '';
         try {
-            $diff = $this->git->run($server, ['diff', $fullSha . '^', $fullSha], true, false);
+            $diff = $this->run($server, ['diff', $fullSha . '^', $fullSha], true, false);
         } catch (RuntimeException $e) {
             // Root commit has no parent
-            $diff = $this->git->run($server, ['diff', '--no-index', '/dev/null', $fullSha], false, false);
+            $diff = $this->run($server, ['diff', '--no-index', '/dev/null', $fullSha], false, false);
         }
 
         return [
@@ -801,7 +953,7 @@ class RepositoryService
         $this->assertRepository($server);
 
         try {
-            $output = $this->git->run($server, ['stash', 'list', '--pretty=format:%gd|%gs|%gD|%ar']);
+            $output = $this->run($server, ['stash', 'list', '--pretty=format:%gd|%gs|%gD|%ar']);
         } catch (RuntimeException $e) {
             return [];
         }
@@ -835,7 +987,7 @@ class RepositoryService
                 $args[] = '-m';
                 $args[] = $message;
             }
-            $this->git->run($server, $args);
+            $this->run($server, $args);
         } catch (RuntimeException $exception) {
             $this->fail($exception->getMessage());
             throw $exception;
@@ -855,7 +1007,7 @@ class RepositoryService
 
         try {
             $this->assertRepository($server);
-            $this->git->run($server, ['stash', 'pop']);
+            $this->run($server, ['stash', 'pop']);
         } catch (RuntimeException $exception) {
             $this->fail($exception->getMessage());
             throw $exception;
@@ -875,7 +1027,7 @@ class RepositoryService
 
         try {
             $this->assertRepository($server);
-            $this->git->run($server, ['stash', 'drop', "stash@{{$index}}"]);
+            $this->run($server, ['stash', 'drop', "stash@{{$index}}"]);
         } catch (RuntimeException $exception) {
             $this->fail($exception->getMessage());
             throw $exception;
@@ -906,7 +1058,7 @@ class RepositoryService
 
         GitOperation::create([
             'server_id' => $server->id,
-            'user_id' => $server->owner_id,
+            'user_id' => $this->actingUserId ?? $server->owner_id,
             'repository' => $repoName,
             'operation' => $operation,
             'branch' => $branch,

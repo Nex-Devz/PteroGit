@@ -34,9 +34,23 @@ use RuntimeException;
 
 class GithubController extends ClientApiController
 {
+    private RepositoryService $repositories;
+
     public function __construct(
-        private readonly RepositoryService $repositories,
+        RepositoryService $repositories,
     ) {
+        $this->repositories = $repositories;
+    }
+
+    /**
+     * Scopes every repository call in a request to the acting panel user.
+     *
+     * Sub-users operate on their own git worktree (isolated branch and working
+     * directory); the server/account owner keeps using the shared checkout.
+     */
+    private function repositoriesForRequest(ClientApiRequest $request): void
+    {
+        $this->repositories = $this->repositories->forUser($request->user()->id);
     }
 
     /**
@@ -44,9 +58,12 @@ class GithubController extends ClientApiController
      */
     public function show(ViewGithubRequest $request, Server $server): array
     {
+        $this->repositoriesForRequest($request);
+
         $notConnected = [
             'is_repository' => false,
             'connected' => false,
+            'worktree' => false,
             'current_branch' => null,
             'ahead' => 0,
             'behind' => 0,
@@ -77,8 +94,6 @@ class GithubController extends ClientApiController
             ];
         }
 
-        $this->authorizeRepositoryOwner($request, $server, $repository);
-
         return [
             'status' => $this->repositories->status($server, $repository),
             'module' => ['enabled' => true, 'admin' => (bool) $request->user()->root_admin],
@@ -92,6 +107,7 @@ class GithubController extends ClientApiController
     public function connect(ConnectRepositoryRequest $request, Server $server): JsonResponse
     {
         $this->assertModuleEnabled();
+        $this->repositoriesForRequest($request);
         $repository = $this->repositories->linked($server);
         if ($repository) {
             throw new DisplayException('This server already has a repository connected. Disconnect it first.');
@@ -128,6 +144,7 @@ class GithubController extends ClientApiController
     public function disconnect(DisconnectRepositoryRequest $request, Server $server): JsonResponse
     {
         $this->assertModuleEnabled();
+        $this->repositoriesForRequest($request);
         $repository = $this->repositories->requireLinked($server);
         $this->authorizeRepositoryOwner($request, $server, $repository);
 
@@ -146,6 +163,7 @@ class GithubController extends ClientApiController
     public function reset(ResetRepositoryRequest $request, Server $server): JsonResponse
     {
         $this->assertModuleEnabled();
+        $this->repositoriesForRequest($request);
         $repository = $this->repositories->requireLinked($server);
         $this->authorizeRepositoryOwner($request, $server, $repository);
 
@@ -163,6 +181,7 @@ class GithubController extends ClientApiController
 
     public function changes(ViewGithubRequest $request, Server $server): JsonResponse
     {
+        $this->repositoriesForRequest($request);
         $this->authorizeLinked($request, $server);
 
         return new JsonResponse(['changes' => $this->repositories->changes($server)]);
@@ -170,6 +189,7 @@ class GithubController extends ClientApiController
 
     public function diff(DiffRequest $request, Server $server): JsonResponse
     {
+        $this->repositoriesForRequest($request);
         $this->authorizeLinked($request, $server);
 
         return new JsonResponse([
@@ -184,6 +204,7 @@ class GithubController extends ClientApiController
     public function stage(FilesRequest $request, Server $server): JsonResponse
     {
         $this->assertModuleEnabled();
+        $this->repositoriesForRequest($request);
         $this->authorizeLinked($request, $server);
 
         return $this->guarded($server, function () use ($request, $server) {
@@ -196,6 +217,7 @@ class GithubController extends ClientApiController
     public function unstage(FilesRequest $request, Server $server): JsonResponse
     {
         $this->assertModuleEnabled();
+        $this->repositoriesForRequest($request);
         $this->authorizeLinked($request, $server);
 
         return $this->guarded($server, function () use ($request, $server) {
@@ -208,6 +230,7 @@ class GithubController extends ClientApiController
     public function discard(FilesRequest $request, Server $server): JsonResponse
     {
         $this->assertModuleEnabled();
+        $this->repositoriesForRequest($request);
         $this->authorizeLinked($request, $server);
 
         return $this->guarded($server, function () use ($request, $server) {
@@ -220,6 +243,7 @@ class GithubController extends ClientApiController
     public function commit(CommitRequest $request, Server $server): JsonResponse
     {
         $this->assertModuleEnabled();
+        $this->repositoriesForRequest($request);
         $this->authorizeLinked($request, $server);
 
         return $this->guarded($server, function () use ($request, $server) {
@@ -238,6 +262,7 @@ class GithubController extends ClientApiController
     public function pull(PullRequest $request, Server $server): JsonResponse
     {
         $this->assertModuleEnabled();
+        $this->repositoriesForRequest($request);
         $this->authorizeLinked($request, $server);
 
         return $this->guarded($server, function () use ($server) {
@@ -248,6 +273,7 @@ class GithubController extends ClientApiController
     public function push(PushRequest $request, Server $server): JsonResponse
     {
         $this->assertModuleEnabled();
+        $this->repositoriesForRequest($request);
         $this->authorizeLinked($request, $server);
 
         return $this->guarded($server, function () use ($server) {
@@ -257,6 +283,7 @@ class GithubController extends ClientApiController
 
     public function branches(ViewGithubRequest $request, Server $server): JsonResponse
     {
+        $this->repositoriesForRequest($request);
         $this->authorizeLinked($request, $server);
 
         return new JsonResponse(['branches' => $this->repositories->branches($server)]);
@@ -265,6 +292,7 @@ class GithubController extends ClientApiController
     public function createBranch(BranchRequest $request, Server $server): JsonResponse
     {
         $this->assertModuleEnabled();
+        $this->repositoriesForRequest($request);
         $this->authorizeLinked($request, $server);
 
         return $this->guarded($server, function () use ($request, $server) {
@@ -281,6 +309,7 @@ class GithubController extends ClientApiController
     public function switchBranch(SwitchBranchRequest $request, Server $server): JsonResponse
     {
         $this->assertModuleEnabled();
+        $this->repositoriesForRequest($request);
         $this->authorizeLinked($request, $server);
 
         return $this->guarded($server, function () use ($request, $server) {
@@ -291,6 +320,7 @@ class GithubController extends ClientApiController
     public function deleteBranch(DeleteBranchRequest $request, Server $server, string $name): JsonResponse
     {
         $this->assertModuleEnabled();
+        $this->repositoriesForRequest($request);
         $this->authorizeLinked($request, $server);
 
         return $this->guarded($server, function () use ($request, $server, $name) {
@@ -302,6 +332,7 @@ class GithubController extends ClientApiController
 
     public function history(CommitHistoryRequest $request, Server $server): JsonResponse
     {
+        $this->repositoriesForRequest($request);
         $this->authorizeLinked($request, $server);
 
         $history = $this->repositories->history($server, (int) $request->input('limit', 25));
@@ -317,6 +348,7 @@ class GithubController extends ClientApiController
     public function revert(RevertRequest $request, Server $server): JsonResponse
     {
         $this->assertModuleEnabled();
+        $this->repositoriesForRequest($request);
         $this->authorizeLinked($request, $server);
 
         return $this->guarded($server, function () use ($request, $server) {
@@ -326,6 +358,7 @@ class GithubController extends ClientApiController
 
     public function gitignore(ViewGithubRequest $request, Server $server): JsonResponse
     {
+        $this->repositoriesForRequest($request);
         $this->authorizeLinked($request, $server);
 
         return new JsonResponse(['content' => $this->repositories->getGitignore($server)]);
@@ -334,6 +367,7 @@ class GithubController extends ClientApiController
     public function saveGitignore(SaveGitignoreRequest $request, Server $server): JsonResponse
     {
         $this->assertModuleEnabled();
+        $this->repositoriesForRequest($request);
         $this->authorizeLinked($request, $server);
 
         return $this->guarded($server, function () use ($request, $server) {
@@ -345,6 +379,7 @@ class GithubController extends ClientApiController
 
     public function identity(ViewGithubRequest $request, Server $server): JsonResponse
     {
+        $this->repositoriesForRequest($request);
         $this->authorizeLinked($request, $server);
 
         return new JsonResponse(['identity' => $this->repositories->identity($server)]);
@@ -353,6 +388,7 @@ class GithubController extends ClientApiController
     public function saveIdentity(SaveIdentityRequest $request, Server $server): JsonResponse
     {
         $this->assertModuleEnabled();
+        $this->repositoriesForRequest($request);
         $this->authorizeLinked($request, $server);
 
         return $this->guarded($server, function () use ($request, $server) {
@@ -364,6 +400,7 @@ class GithubController extends ClientApiController
 
     public function remote(ViewGithubRequest $request, Server $server): JsonResponse
     {
+        $this->repositoriesForRequest($request);
         $this->authorizeLinked($request, $server);
 
         return new JsonResponse(['remote' => $this->repositories->remote($server)]);
@@ -371,6 +408,7 @@ class GithubController extends ClientApiController
 
     public function commitDetail(CommitDetailRequest $request, Server $server): JsonResponse
     {
+        $this->repositoriesForRequest($request);
         $this->authorizeLinked($request, $server);
 
         return new JsonResponse([
@@ -380,6 +418,7 @@ class GithubController extends ClientApiController
 
     public function stashList(ViewGithubRequest $request, Server $server): JsonResponse
     {
+        $this->repositoriesForRequest($request);
         $this->authorizeLinked($request, $server);
 
         return new JsonResponse(['stashes' => $this->repositories->stashList($server)]);
@@ -388,6 +427,7 @@ class GithubController extends ClientApiController
     public function stashPush(StashRequest $request, Server $server): JsonResponse
     {
         $this->assertModuleEnabled();
+        $this->repositoriesForRequest($request);
         $this->authorizeLinked($request, $server);
 
         return $this->guarded($server, function () use ($request, $server) {
@@ -401,6 +441,7 @@ class GithubController extends ClientApiController
     public function stashPop(ViewGithubRequest $request, Server $server): JsonResponse
     {
         $this->assertModuleEnabled();
+        $this->repositoriesForRequest($request);
         $this->authorizeLinked($request, $server);
 
         return $this->guarded($server, function () use ($server) {
@@ -411,6 +452,7 @@ class GithubController extends ClientApiController
     public function stashDrop(StashDropRequest $request, Server $server): JsonResponse
     {
         $this->assertModuleEnabled();
+        $this->repositoriesForRequest($request);
         $this->authorizeLinked($request, $server);
 
         return $this->guarded($server, function () use ($request, $server) {
@@ -434,17 +476,15 @@ class GithubController extends ClientApiController
     }
 
     /**
-     * Confirms the requesting user is the owner of the linked repository account or a server admin.
+     * Confirms a repository is connected to the server.
+     *
+     * Route-level permission middleware (git.*) already guards who may reach
+     * these endpoints, so any authorised sub-user with the appropriate git
+     * permission can operate — on their own personal worktree.
      */
-    private function authorizeRepository(ClientApiRequest $request, Server $server): void
-    {
-        $repository = $this->repositories->requireLinked($server);
-        $this->authorizeRepositoryOwner($request, $server, $repository);
-    }
-
     private function authorizeLinked(ClientApiRequest $request, Server $server): void
     {
-        $this->authorizeRepository($request, $server);
+        $this->repositories->requireLinked($server);
     }
 
     /**

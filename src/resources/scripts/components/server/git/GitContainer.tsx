@@ -434,6 +434,12 @@ const TabButton = ({
 
 const Overview = ({ status, uuid }: { status: GitStatus; uuid: string }) => (
     <>
+        {status.worktree && (
+            <div css={tw`mb-4 rounded-lg border border-cyan-700/60 bg-cyan-900/20 px-4 py-3 text-sm text-cyan-200`}>
+                You are working in your own private workspace on branch <span css={tw`font-semibold text-cyan-100`}>{status.current_branch ?? '—'}</span>.
+                Commit and push your changes to share them with the server owner and other users.
+            </div>
+        )}
         {status.repository && (
             <ContentBox title={status.repository.repository_full_name ?? 'Repository'}>
                 <div css={tw`grid grid-cols-1 md:grid-cols-2 gap-4`}>
