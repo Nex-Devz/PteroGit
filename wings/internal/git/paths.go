@@ -27,7 +27,7 @@ func ResolveVolumePath(volumeRoot, rel string) (string, error) {
 		return "", fmt.Errorf("the requested path is outside the volume root")
 	}
 	for _, seg := range strings.Split(rel, "/") {
-		if seg == ".." {
+		if strings.HasPrefix(seg, "..") {
 			return "", fmt.Errorf("the requested path is outside the volume root")
 		}
 	}
