@@ -36,6 +36,30 @@ Redis is recommended for the panel cache and queue but not required.
 
 ---
 
+## Multi-node support (Wings git channel)
+
+By default PteroGit executes git on the panel host (`sudo -u pterodactyl`), which only works when the panel is co-located with Wings. On any multi-node panel the server's volume lives on the **server's Wings node**, not the panel host.
+
+To make git run on the server's own node, PteroGit ships a tiny **git channel** for the Wings daemon (a standalone Go module in [`wings/`](wings/README.md) that also integrates into a Wings fork). Once a node exposes the channel:
+
+- the panel **auto-detects it** (health probe, cached per node) and routes every git operation to that node over HTTPS, authenticated with a short-lived HS256 JWT signed with the node daemon token;
+- the **real volume path is resolved by the node** — a stale `nodes.daemonBase` can never point git at an empty directory again;
+- credentials travel only in the request body (injected via `GIT_ASKPASS`), so tokens never appear in process args or logs on the node.
+
+Transport selection: `auto` (default), `local` or `wings`. Configure via `config/pterodactyl.php`:
+
+```php
+'git' => [
+    'transport' => env('PTERODACTYL_GIT_TRANSPORT', 'auto'),
+    'data_directory' => env('PTERODACTYL_GIT_DATA_DIRECTORY', '/var/lib/pterodactyl'),
+    'probe_ttl' => 300,
+],
+```
+
+Nodes that still run stock Wings (no git channel) automatically fall back to local execution, so single-node/co-located installs keep working untouched.
+
+---
+
 ## Installation
 
 Run as `root` (or with `sudo`). The installer is self-contained — it needs no clone; when
