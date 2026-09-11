@@ -41,6 +41,23 @@ jobs:
         with:
           files: install.sh tests/fixtures/refresh.sh
 
+  go-test:
+    name: Wings Go module
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.21"
+      - name: Build
+        working-directory: wings
+        run: go build ./...
+      - name: Test
+        working-directory: wings
+        run: go test ./...
+
   patcher-idempotency:
     name: Patcher idempotency
     runs-on: ubuntu-latest
