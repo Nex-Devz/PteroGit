@@ -14,6 +14,12 @@ func dropToVolumeOwner(dir string) *syscall.SysProcAttr {
 	if !ok {
 		return nil
 	}
+	// Already the volume owner (tests, or a non-root executor): nothing to do.
+	// A non-root process cannot setuid; attempting it fails with EPERM.
+	if os.Geteuid() != 0 {
+		return nil
+	}
+	// Root executor: drop to the container user.
 	return &syscall.SysProcAttr{
 		Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)},
 	}

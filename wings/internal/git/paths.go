@@ -16,8 +16,27 @@ func ResolveVolumePath(volumeRoot, rel string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid volume root: %w", err)
 	}
+	root = filepath.Clean(root)
 
-	target := filepath.Clean(filepath.Join(root, filepath.Clean("/"+rel)))
+	if rel == "" {
+		return "", fmt.Errorf("empty path")
+	}
+	// Reject absolute paths and any '..' segment outright (defence in depth):
+	// even a compromised client can never climb out of the volume root.
+	if strings.HasPrefix(rel, "/") {
+		return "", fmt.Errorf("the requested path is outside the volume root")
+	}
+	for _, seg := range strings.Split(rel, "/") {
+		if seg == ".." {
+			return "", fmt.Errorf("the requested path is outside the volume root")
+		}
+	}
+
+	target := filepath.Join(root, filepath.FromSlash(rel))
+	target = filepath.Clean(target)
+	if target == root {
+		return root, nil
+	}
 	if !strings.HasPrefix(target, root+string(os.PathSeparator)) {
 		return "", fmt.Errorf("the requested path is outside the volume root")
 	}
