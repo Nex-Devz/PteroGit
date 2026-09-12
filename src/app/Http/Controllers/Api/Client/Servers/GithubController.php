@@ -488,22 +488,42 @@ class GithubController extends ClientApiController
     }
 
     /**
-     * Runs a write-operation under a per-server lock so concurrent requests cannot corrupt the repo.
+     * Runs a write-operation under a per-server lock (when supported) so concurrent requests cannot corrupt the repo.
      */
     private function guarded(Server $server, callable $callback)
     {
-        $lock = Cache::lock('git:server:' . $server->id, 120);
+        $lock = null;
+        $acquired = false;
 
         try {
-            if (!$lock->acquire()) {
-                throw new DisplayException('Another Git operation is already in progress for this server. Please wait and try again.');
+            if (method_exists(Cache::getStore(), 'lock')) {
+                $lock = Cache::lock('git:server:' . $server->id, 120);
+                $acquired = (bool) $lock->acquire();
+                if (!$acquired) {
+                    throw new DisplayException('Another Git operation is already in progress for this server. Please wait and try again.');
+                }
             }
+        } catch (DisplayException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            // Cache store does not support atomic locks (e.g. file cache driver) — proceed unlocked
+            $lock = null;
+        }
 
+        try {
             return $callback();
-        } catch (RuntimeException $exception) {
+        } catch (DisplayException $exception) {
+            throw $exception;
+        } catch (\Throwable $exception) {
             throw new DisplayException($exception->getMessage(), $exception);
         } finally {
-            $lock->release();
+            if ($lock && $acquired) {
+                try {
+                    $lock->release();
+                } catch (\Throwable $e) {
+                    // Ignore release errors on unsupported stores
+                }
+            }
         }
     }
 

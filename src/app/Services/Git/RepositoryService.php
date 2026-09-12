@@ -90,12 +90,24 @@ class RepositoryService
             return $cwd;
         }
 
-        $lock = Cache::lock('git:worktree:' . $server->id . ':' . $userId, 120);
+        $lock = null;
+        $acquired = false;
         try {
-            if (!$lock->acquire()) {
-                throw new RuntimeException('Another request is already creating your workspace. Please retry.');
+            if (method_exists(Cache::getStore(), 'lock')) {
+                $lock = Cache::lock('git:worktree:' . $server->id . ':' . $userId, 120);
+                $acquired = (bool) $lock->acquire();
+                if (!$acquired) {
+                    throw new RuntimeException('Another request is already creating your workspace. Please retry.');
+                }
             }
+        } catch (RuntimeException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            // Cache store does not support atomic locks — proceed unlocked
+            $lock = null;
+        }
 
+        try {
             if ($this->git->isRepositoryAt($server, $cwd)) {
                 return $cwd;
             }
@@ -110,7 +122,13 @@ class RepositoryService
 
             return $cwd;
         } finally {
-            $lock->release();
+            if ($lock && $acquired) {
+                try {
+                    $lock->release();
+                } catch (\Throwable $e) {
+                    // Ignore release errors on unsupported stores
+                }
+            }
         }
     }
 
@@ -220,36 +238,87 @@ class RepositoryService
      *
      * @throws RuntimeException
      */
+    /**
+     * Probes the remote repository to discover the default branch and whether it is empty.
+     * Returns ['branch' => string, 'empty' => bool].
+     */
+    private function discoverRemoteInfo(Server $server, string $remoteUrl, string $token): array
+    {
+        try {
+            $output = $this->git->runWithTokenUrlAt($server, $this->git->repositoryCwd($server), ['ls-remote', '--symref', 'origin', 'HEAD'], $remoteUrl, $token);
+            if (trim($output) === '') {
+                return ['branch' => 'main', 'empty' => true];
+            }
+
+            if (preg_match('#ref:\s+refs/heads/([^\s]+)\s+HEAD#', $output, $m)) {
+                return ['branch' => trim($m[1]), 'empty' => false];
+            }
+
+            if (preg_match('/[0-9a-f]{40}\s+HEAD/i', $output)) {
+                return ['branch' => 'main', 'empty' => false];
+            }
+
+            return ['branch' => 'main', 'empty' => false];
+        } catch (\Throwable $e) {
+            return ['branch' => 'main', 'empty' => false];
+        }
+    }
+
+    /**
+     * Connects a GitHub repository to the server by initializing git, wiring
+     * up the remote and pulling down the requested branch.
+     *
+     * The token is embedded in the remote URL only for the network operations
+     * (fetch) and never written to disk or stored in git config.
+     *
+     * @param string $mode one of "clone" (replace contents), "pull" (keep existing files), "init" (empty repo)
+     *
+     * @throws RuntimeException
+     */
     public function connect(Server $server, GithubAccount $account, array $data, string $mode = 'clone'): array
     {
         $repoName = (string) ($data['repository_full_name'] ?? '');
         $remoteUrl = (string) ($data['remote_url'] ?? '');
-        $branch = (string) ($data['branch'] ?? $data['default_branch'] ?? 'main');
 
         if ($repoName === '' || $remoteUrl === '') {
             throw new RuntimeException('Missing repository information.');
         }
 
+        $token = $account->accessToken();
+        $explicitBranch = !empty($data['branch']) ? (string) $data['branch'] : null;
+        $remoteInfo = $this->discoverRemoteInfo($server, $remoteUrl, $token);
+        $isEmptyRemote = $remoteInfo['empty'];
+        $branch = $explicitBranch ?? (!empty($data['default_branch']) ? (string) $data['default_branch'] : $remoteInfo['branch']);
+
         $this->begin($server, 'connect', $repoName, $branch);
 
         try {
-            $token = $account->accessToken();
+            $this->run($server, ['init', '-b', $branch]);
+            $this->ensureRemote($server, $remoteUrl);
+            $this->run($server, ['config', 'user.name', $account->username]);
+            $this->run($server, ['config', 'user.email', $account->username . '@users.noreply.github.com']);
 
-            if ($mode === 'init') {
-                $this->run($server, ['init', '-b', $branch]);
-                $this->run($server, ['remote', 'add', 'origin', $remoteUrl]);
-                $this->run($server, ['config', 'user.name', $account->username]);
-                $this->run($server, ['config', 'user.email', $account->username . '@users.noreply.github.com']);
+            if ($mode === 'init' || $isEmptyRemote) {
+                // Empty remote or init mode: ready for local commits/pushes without fetch
             } else {
-                $this->run($server, ['init', '-b', $branch]);
-                $this->ensureRemote($server, $remoteUrl);
-                // Fetch with an explicit refspec so the remote-tracking ref
-                // refs/remotes/origin/<branch> is written even though we pass
-                // the token-embedded URL directly instead of the remote name.
                 $refspec = "refs/heads/{$branch}:refs/remotes/origin/{$branch}";
                 $this->runWithTokenUrl($server, ['fetch', 'origin', $refspec], $remoteUrl, $token);
-                $this->run($server, ['checkout', '-B', $branch, 'origin/' . $branch]);
-                if ($mode === 'clone') {
+
+                if ($mode === 'pull') {
+                    // "Keep existing files" mode:
+                    // Stage any existing working tree files
+                    $this->run($server, ['add', '-A']);
+                    $staged = trim($this->run($server, ['diff', '--cached', '--name-only']));
+                    if ($staged !== '') {
+                        $this->run($server, ['commit', '-m', 'Initial server files before GitHub connection']);
+                        $this->run($server, ['merge', '--no-edit', '--allow-unrelated-histories', '-X', 'ours', 'origin/' . $branch]);
+                    } else {
+                        $this->run($server, ['checkout', '-B', $branch, 'origin/' . $branch]);
+                    }
+                } else {
+                    // "Clone / Replace" mode: clean untracked files then force checkout & reset
+                    $this->run($server, ['checkout', '-B', $branch, '--force', 'origin/' . $branch]);
+                    $this->run($server, ['clean', '-fdx']);
                     $this->run($server, ['reset', '--hard', 'origin/' . $branch]);
                 }
             }
@@ -542,9 +611,21 @@ class RepositoryService
             $remoteUrl = $repository->remote_url;
             $branch = $this->currentBranchish($server);
 
+            $hasHead = true;
+            try {
+                $this->run($server, ['rev-parse', '--verify', 'HEAD']);
+            } catch (RuntimeException $e) {
+                $hasHead = false;
+            }
+
             $refspec = "refs/heads/{$branch}:refs/remotes/origin/{$branch}";
             $this->runWithTokenUrl($server, ['fetch', 'origin', $refspec], $remoteUrl, $token);
-            $this->run($server, ['merge', '--ff-only', 'origin/' . $branch]);
+
+            if ($hasHead) {
+                $this->run($server, ['merge', '--ff-only', 'origin/' . $branch]);
+            } else {
+                $this->run($server, ['checkout', '-B', $branch, 'origin/' . $branch]);
+            }
         } catch (RuntimeException $exception) {
             $this->fail($exception->getMessage());
 
@@ -868,10 +949,23 @@ class RepositoryService
     private function currentBranchish(Server $server): string
     {
         try {
-            return $this->run($server, ['rev-parse', '--abbrev-ref', 'HEAD']);
+            $ref = trim($this->run($server, ['rev-parse', '--abbrev-ref', 'HEAD']));
+            if ($ref !== '' && $ref !== 'HEAD') {
+                return $ref;
+            }
         } catch (RuntimeException $e) {
-            return 'main';
+            // Unborn or no HEAD
         }
+
+        $linked = $this->linked($server);
+        if ($linked && !empty($linked->current_branch)) {
+            return $linked->current_branch;
+        }
+        if ($linked && !empty($linked->default_branch)) {
+            return $linked->default_branch;
+        }
+
+        return 'main';
     }
 
     /**

@@ -130,8 +130,6 @@ class LocalGitTransport implements GitNodeTransportContract
         if (!$process->isSuccessful()) {
             throw new RuntimeException(trim((string) $process->getErrorOutput()) ?: 'Failed to write file.');
         }
-
-        $this->chownFile($server, $cwdRel, $basename);
     }
 
     public function mkdir(Server $server, string $cwdRel): void
@@ -142,20 +140,19 @@ class LocalGitTransport implements GitNodeTransportContract
         if (!$mkdir->isSuccessful()) {
             throw new RuntimeException(trim((string) $mkdir->getErrorOutput()) ?: 'Failed to create directory.');
         }
-
-        $chown = $this->process(['/usr/bin/sudo', '-n', '-u', 'root', '/usr/bin/chown', 'pterodactyl:pterodactyl', $path], null, 30);
-        if (!$chown->isSuccessful()) {
-            throw new RuntimeException(trim((string) $chown->getErrorOutput()) ?: 'Failed to set directory ownership.');
-        }
     }
 
     public function chownFile(Server $server, string $cwdRel, string $basename): void
     {
         $path = $this->abs($server, $cwdRel) . '/' . GitPaths::normalize($basename);
 
-        $chown = $this->process(['/usr/bin/sudo', '-n', '-u', 'root', '/usr/bin/chown', 'pterodactyl:pterodactyl', $path], null, 30);
+        $chown = $this->process(['/usr/bin/sudo', '-n', '-u', 'pterodactyl', '/usr/bin/chown', 'pterodactyl:pterodactyl', $path], null, 30);
         if (!$chown->isSuccessful()) {
-            throw new RuntimeException(trim((string) $chown->getErrorOutput()) ?: 'Failed to set file ownership.');
+            // Non-fatal if already owned or running under pterodactyl user
+            $error = trim((string) $chown->getErrorOutput());
+            if ($error !== '' && !str_contains($error, 'Operation not permitted')) {
+                throw new RuntimeException($error ?: 'Failed to set file ownership.');
+            }
         }
     }
 }

@@ -6,6 +6,24 @@ Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to
 
 Releases are created automatically from `v*` tags (see `.github/workflows/release.yml`).
 
+## [1.5.0] – 2026-09-12
+
+### Fixed
+- **Installer patcher line-boundary protection**: `patch_multi` now detects line boundaries when inserting blocks, eliminating syntax errors and mid-line splicing on themed or customized panel files (`routes/admin.php`, `routes.ts`, `DashboardRouter.tsx`, etc.).
+- **Installer feature file synchronization**: `install.sh` now reliably updates/overwrites all PteroGit feature files (`src/`) so newly added methods (such as `auditLog()`) and controller dependencies are never skipped when re-running the installer or upgrading.
+- **Frontend build independence**: Removed external `@fortawesome/free-brands-svg-icons` package dependency by shipping a self-contained `faGithub` icon definition, resolving frontend build breakages on stock panels.
+- **Cache driver lock resilience**: `guarded()` and `ensureWorktree()` now gracefully fall back when atomic cache locks are not supported by the cache store (e.g. `CACHE_DRIVER=file`), eliminating 500 errors on standard panel setups.
+- **Exception handling & reporting**: `guarded()` now catches `\Throwable` and wraps all underlying errors into `DisplayException`, ensuring actionable error messages reach the client rather than collapsing into generic 500s.
+- **Local transport sudo execution**: Removed invalid `sudo -u root` invocations in `LocalGitTransport.php`; all file and directory creations are handled under the `pterodactyl` system user.
+- **"Keep existing files" (pull mode) connection**: Non-empty server directories now cleanly commit baseline files and merge `origin/<branch>` with `--allow-unrelated-histories -X ours` instead of aborting with untracked file conflicts.
+- **"Clone / replace" mode connection**: Runs `clean -fdx` and checkout with force to prevent untracked file collisions during initial clone.
+- **Dynamic remote default branch resolution**: Resolves real upstream default branch via `git ls-remote` (supporting `master`, `main`, etc.) and handles empty remote repositories without failing fetch.
+- **Unborn HEAD status and pull resilience**: `currentBranchish()` and `pull()` now detect unborn HEAD states and return appropriate status rather than raising invalid ref fetch errors.
+
+### Added
+- **Explicit transport configuration**: Added `PTERODACTYL_GIT_TRANSPORT` (`auto|local|wings`) and `PTERODACTYL_GIT_PROBE_TTL` environment variable support to `config/pterodactyl.php` and `install.sh`.
+- **Sudoers rule provisioning**: Installer provisions scoped sudo permissions in `/etc/sudoers.d/pterodactyl-git` for `git`, `cat`, `tee`, `mkdir`, and `chown` with `!requiretty`.
+
 ## [1.4.0] – 2026-09-11
 
 ### Added

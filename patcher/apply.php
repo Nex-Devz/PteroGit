@@ -21,7 +21,7 @@
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 
-$panel = rtrim((string) ($argv[1] ?? ''), '/');
+$panel = rtrim(str_replace('\\', '/', (string) ($argv[1] ?? '')), '/');
 if ($panel === '' || !file_exists($panel . '/artisan') || !file_exists($panel . '/config/pterodactyl.php')) {
     fwrite(STDERR, "Usage: php apply.php <path-to-pterodactyl-panel>\n");
     exit(1);
@@ -120,6 +120,26 @@ function find_before_first(string $content, string $needle): ?int
     return null;
 }
 
+/**
+ * Finds the byte offset of the end of the line (newline character) at or after $pos.
+ */
+function line_end_pos(string $content, int $pos): int
+{
+    $nl = strpos($content, "\n", $pos);
+
+    return $nl !== false ? $nl : strlen($content);
+}
+
+/**
+ * Finds the byte offset of the beginning of the line at or before $pos.
+ */
+function line_start_pos(string $content, int $pos): int
+{
+    $prevNl = strrpos(substr($content, 0, $pos), "\n");
+
+    return $prevNl !== false ? $prevNl + 1 : 0;
+}
+
 /* ──────────────────────────────────────── multi-anchor patch engine */
 
 /**
@@ -193,10 +213,16 @@ function patch_multi(string $relPath, string $defaultMode, array $anchors, strin
 
         switch ($mode) {
             case 'after':
-                $newContent = substr($content, 0, $pos + $len) . $insert . substr($content, $pos + $len);
+                $targetPos = str_starts_with($insert, "\n")
+                    ? line_end_pos($content, $pos + $len)
+                    : $pos + $len;
+                $newContent = substr($content, 0, $targetPos) . $insert . substr($content, $targetPos);
                 break;
             case 'before':
-                $newContent = substr($content, 0, $pos) . $insert . substr($content, $pos);
+                $targetPos = str_ends_with($insert, "\n")
+                    ? line_start_pos($content, $pos)
+                    : $pos;
+                $newContent = substr($content, 0, $targetPos) . $insert . substr($content, $targetPos);
                 break;
             case 'replace':
                 $newContent = substr($content, 0, $pos) . $insert . substr($content, $pos + $len);
@@ -210,14 +236,20 @@ function patch_multi(string $relPath, string $defaultMode, array $anchors, strin
                 if ($lastPos === null) {
                     continue 2;
                 }
-                $newContent = substr($content, 0, $lastPos) . $insert . substr($content, $lastPos);
+                $targetPos = str_starts_with($insert, "\n")
+                    ? line_end_pos($content, $lastPos)
+                    : $lastPos;
+                $newContent = substr($content, 0, $targetPos) . $insert . substr($content, $targetPos);
                 break;
             case 'before_first':
                 $firstPos = find_before_first($content, $needle);
                 if ($firstPos === null) {
                     continue 2;
                 }
-                $newContent = substr($content, 0, $firstPos) . $insert . substr($content, $firstPos);
+                $targetPos = str_ends_with($insert, "\n")
+                    ? line_start_pos($content, $firstPos)
+                    : $firstPos;
+                $newContent = substr($content, 0, $targetPos) . $insert . substr($content, $targetPos);
                 break;
             default:
                 continue 2;
@@ -1227,6 +1259,8 @@ if (file_exists($configFile)) {
     'git' => [
         'data_directory' => env('PTERODACTYL_GIT_DATA_DIRECTORY', '/var/lib/pterodactyl'),
         'enabled' => (bool) env('PTERODACTYL_GIT_ENABLED', true),
+        'transport' => env('PTERODACTYL_GIT_TRANSPORT', 'auto'),
+        'probe_ttl' => (int) env('PTERODACTYL_GIT_PROBE_TTL', 300),
         'oauth' => [
             'enabled' => (bool) env('GITHUB_OAUTH_ENABLED', false),
             'client_id' => (string) env('GITHUB_OAUTH_CLIENT_ID', ''),
@@ -1257,6 +1291,8 @@ PHP;
     'git' => [
         'data_directory' => env('PTERODACTYL_GIT_DATA_DIRECTORY', '/var/lib/pterodactyl'),
         'enabled' => (bool) env('PTERODACTYL_GIT_ENABLED', true),
+        'transport' => env('PTERODACTYL_GIT_TRANSPORT', 'auto'),
+        'probe_ttl' => (int) env('PTERODACTYL_GIT_PROBE_TTL', 300),
         'oauth' => [
             'enabled' => (bool) env('GITHUB_OAUTH_ENABLED', false),
             'client_id' => (string) env('GITHUB_OAUTH_CLIENT_ID', ''),

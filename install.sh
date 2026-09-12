@@ -42,7 +42,7 @@
 
 set -euo pipefail
 
-PTEROGIT_INSTALLER_VER="1.1.3"
+PTEROGIT_INSTALLER_VER="1.5.0"
 PTEROGIT_VERSION="${PTEROGIT_VERSION:-main}"
 PTEROGIT_GITHUB="Nex-Devz/PteroGit"
 
@@ -329,18 +329,16 @@ done
 ok "Backup created at $BK"
 
 # ---------------------------------------------------------- copy new files
-info "Copying new feature files into the panel..."
+info "Copying feature files into the panel..."
 COPIED=0
 while IFS= read -r -d '' f; do
     rel="${f#"$SRC"/}"
     dest="$PANEL/$rel"
-    if [[ ! -e "$dest" ]]; then
-        mkdir -p "$(dirname "$dest")"
-        cp "$f" "$dest"
-        COPIED=$((COPIED + 1))
-    fi
+    mkdir -p "$(dirname "$dest")"
+    cp "$f" "$dest"
+    COPIED=$((COPIED + 1))
 done < <(find "$SRC" -type f -print0)
-ok "Copied $COPIED new file(s) (existing files left untouched)."
+ok "Copied $COPIED feature file(s) into the panel tree."
 
 # --------------------------------------------------------------- patches
 info "Applying route/config/router patches (idempotent)..."
@@ -388,6 +386,8 @@ add_env() { # $1 key, $2 default
 }
 add_env PTERODACTYL_GIT_ENABLED true
 add_env PTERODACTYL_GIT_DATA_DIRECTORY /var/lib/pterodactyl
+add_env PTERODACTYL_GIT_TRANSPORT auto
+add_env PTERODACTYL_GIT_PROBE_TTL 300
 add_env GITHUB_OAUTH_ENABLED false
 add_env GITHUB_OAUTH_CLIENT_ID ""
 add_env GITHUB_OAUTH_CLIENT_SECRET ""
@@ -466,8 +466,9 @@ if [[ "$INSTALL_SUDOERS" -eq 1 ]]; then
     fi
     cat > /etc/sudoers.d/pterodactyl-git <<SOF
 # GitHub integration for the Pterodactyl panel.
-# Allows the web user to run git/tee commands ONLY as the 'pterodactyl' user.
-$WEB_USER ALL=(pterodactyl) NOPASSWD: /usr/bin/git, /usr/bin/tee, /usr/bin/chown
+# Allows the web user to run git/cat/tee/mkdir/chown commands ONLY as the 'pterodactyl' user.
+Defaults:$WEB_USER !requiretty
+$WEB_USER ALL=(pterodactyl) NOPASSWD: /usr/bin/git, /usr/bin/cat, /usr/bin/tee, /usr/bin/mkdir, /usr/bin/chown
 SOF
     chmod 0440 /etc/sudoers.d/pterodactyl-git
     if ! visudo -c >/dev/null 2>&1; then
@@ -491,9 +492,10 @@ echo "     Server -> Users -> Edit -> enable the 'git' permissions."
 echo "     The 'git' group is auto-registered by the installer; root admins"
 echo "     always see the GitHub tab. (Docs: docs/permissions.md)"
 echo
-echo "  2. The server 'data_directory' must be readable by the 'pterodactyl'"
+echo "  2. The server 'data_directory' must be accessible by the 'pterodactyl'"
 echo "     system user. Point it at the Wings data folder:"
 echo "       PTERODACTYL_GIT_DATA_DIRECTORY=/var/lib/pterodactyl"
+echo "     Ensure parent directories allow traversal (e.g. chmod o+x /var/lib/pterodactyl)"
 echo "     and ensure each server folder is chown'ed:"
 echo "       chown -R pterodactyl:pterodactyl /var/lib/pterodactyl/<server-uuid>"
 echo
